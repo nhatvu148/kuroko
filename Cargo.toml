@@ -11,9 +11,13 @@ authors = ["Nhat Vu <nhatvu148@gmail.com>"]
 # the crate name, so these carry the weight the name does not.
 keywords = ["mcp", "windows", "automation", "uia", "accessibility"]
 categories = ["os::windows-apis", "command-line-utilities", "accessibility"]
-# The oldest toolchain this has actually been built on. Not a claim that older
-# ones fail - nobody has tried - but stating an unverified floor would turn a
-# clean "needs a newer rustc" into a confusing compile error for whoever hits it.
+# The oldest toolchain this has actually been built on, and deliberately
+# conservative: the highest MSRV any dependency declares is image's 1.88, so the
+# true floor is somewhere at or below that. Nothing between 1.88 and 1.96 has
+# been tested, and claiming an untested floor is worse than claiming a high one -
+# too high gives a clean "requires rustc 1.96", too low gives a confusing compile
+# error inside a dependency. CI runs stable (1.98.0 at time of writing) and
+# passes, so this cannot be above what stable provides.
 rust-version = "1.96"
 # An allowlist, not an exclude-list. Publishing is permanent, and an exclude
 # cannot protect against a file nobody thought of - a dry run of this crate with
