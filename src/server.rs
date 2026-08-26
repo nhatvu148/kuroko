@@ -6,7 +6,7 @@
 //! outside "look at the desktop and act on a control" belongs on the SSH side,
 //! where it is not running with an admin token.
 
-use crate::{capture, guard, uia};
+use crate::{capture, guard, ocr, uia};
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{
     CallToolResult, ContentBlock, Implementation, ProtocolVersion, ServerCapabilities, ServerInfo,
@@ -50,6 +50,14 @@ pub struct ObserveParams {
     pub detail: Option<String>,
     /// Downscale width before encoding. Default 1400; 0 for native.
     pub max_width: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema, Default)]
+pub struct FindTextParams {
+    /// Case-insensitive substring. Omit to return every line on screen.
+    pub query: Option<String>,
+    /// Cap on returned matches. Default 50.
+    pub max_matches: Option<usize>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -191,6 +199,26 @@ impl Wincrust {
             ));
         }
         Ok(CallToolResult::success(out))
+    }
+
+    #[tool(
+        name = "find_text",
+        description = "Read text off the screen with OCR and return where it is. Use this ONLY when \
+                       `discover` comes back empty or useless - an app that draws its own interface \
+                       exposes no UI tree. Slower and less certain than `discover`; prefer that whenever \
+                       it returns anything."
+    )]
+    async fn find_text(
+        &self,
+        Parameters(p): Parameters<FindTextParams>,
+    ) -> Result<Json<ocr::TextResult>, McpError> {
+        let q = p.query;
+        let max = p.max_matches.unwrap_or(50);
+        tokio::task::spawn_blocking(move || ocr::find_text(q.as_deref(), max))
+            .await
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?
+            .map(Json)
+            .map_err(|e| McpError::internal_error(e.to_string(), None))
     }
 
     #[tool(

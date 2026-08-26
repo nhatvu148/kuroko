@@ -2,6 +2,7 @@ mod capture;
 mod dpi;
 mod guard;
 mod lease;
+mod ocr;
 mod server;
 mod uia;
 
@@ -44,6 +45,14 @@ enum Command {
         /// Comma-separated client IPs permitted to connect.
         #[arg(long)]
         ip_allowlist: Option<String>,
+    },
+    /// Read text off the screen and return where it is (OCR).
+    FindText {
+        /// Case-insensitive substring. Omit to return every line found.
+        #[arg(long)]
+        query: Option<String>,
+        #[arg(long, default_value_t = 50)]
+        max: usize,
     },
     /// List displays with their bounds and real scale factors.
     Displays,
@@ -170,6 +179,11 @@ async fn main() -> Result<()> {
                 .filter(|s| !s.is_empty())
                 .collect();
             server::serve(engine, &transport, &host, port, auth_key, allow).await?;
+        }
+        Command::FindText { query, max } => {
+            let r = tokio::task::spawn_blocking(move || ocr::find_text(query.as_deref(), max))
+                .await??;
+            println!("{}", serde_json::to_string_pretty(&r)?);
         }
         Command::Displays => {
             println!(

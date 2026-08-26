@@ -30,6 +30,7 @@ required. The reason is what elevation does to the cost of a large dependency tr
 | `discover` | actionable elements + a signed scope |
 | `act` | click / type / toggle / expand / select, via UIA control patterns |
 | `observe` | `text` \| `image` \| `diff` |
+| `find_text` | OCR the screen, return text with coordinates — for apps with no UI tree |
 | `launch` | allowlist-only; fails closed |
 
 No shell, no registry, no filesystem, no arbitrary process spawn. Use SSH for those — it does not
@@ -118,7 +119,10 @@ tested scaling — and a DPI-unaware build looks entirely healthy at 100%.
 ## Limits
 
 - Apps that draw their own UI expose no tree. Abaqus/CAE returns six elements, all window chrome.
-  For those, use the application's scripting API over SSH.
+  `find_text` is the fallback: OCR via `Windows.Media.Ocr`, returning text with screen coordinates.
+  It reads 14 of 15 Abaqus model-tree labels, but small dense text degrades — a menu bar came back as
+  `Eile Model Vieuport Yiew eart Shape`, and digits are read as letters (`Steps (1)` → `Steps (I)`).
+  Where the application has a scripting API, prefer that over either.
 - UAC *consent* prompts live on the Secure Desktop and are unreachable by any process, elevated or not.
 - Must run in the interactive session. Session 0 has no desktop.
 
