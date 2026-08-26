@@ -202,9 +202,9 @@ impl Engine {
     }
 }
 
-// Engine is Clone, so it deliberately has no Drop impl. Sending Cmd::Shutdown
-// from one would be a per-clone action with a process-wide effect: the HTTP
-// transport builds a Kuroko (and so an Engine clone) per session, and the first
-// session to end would take down the COM thread every other session shares.
-// The thread already stops on its own - `rx.recv()` returns Err once the last
-// Sender is dropped, which is exactly the "no owners left" condition wanted.
+// Engine is Clone and deliberately has no Drop impl. Signalling shutdown from
+// one would be a per-clone action with a process-wide effect: the HTTP transport
+// builds a Kuroko (and so an Engine clone) per session, so the first session to
+// end would take down the COM thread every other session shares. The thread
+// already stops on its own - `rx.recv()` returns Err once the last Sender is
+// dropped, which is exactly the "no owners left" condition wanted.
