@@ -112,9 +112,12 @@ pub fn grab() -> Result<Frame> {
             return Err(anyhow!("GetDIBits returned no scanlines"));
         }
 
+        // Indexed rather than chunks_exact(4): newer clippy denies a constant
+        // chunk size, and the suggested replacements are not stable across the
+        // toolchain range this has to build on.
         let mut rgb = Vec::with_capacity((w as usize) * (h as usize) * 3);
-        for px in bgra.chunks_exact(4) {
-            rgb.extend_from_slice(&[px[2], px[1], px[0]]);
+        for i in (0..bgra.len()).step_by(4) {
+            rgb.extend_from_slice(&[bgra[i + 2], bgra[i + 1], bgra[i]]);
         }
         Ok(Frame {
             w: w as u32,
