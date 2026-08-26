@@ -9,7 +9,10 @@ use clap::{Parser, Subcommand};
 use std::time::Instant;
 
 #[derive(Parser)]
-#[command(name = "kuroko", about = "Elevated Windows desktop automation over MCP")]
+#[command(
+    name = "kuroko",
+    about = "Elevated Windows desktop automation over MCP"
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Command,
@@ -111,7 +114,10 @@ async fn main() -> Result<()> {
     let lease_key = lease::new_key()?;
     let engine = uia::Engine::spawn(uia::EngineConfig { lease_key })?;
     let startup = t0.elapsed();
-    tracing::info!("UIA engine ready in {:.1}ms", startup.as_secs_f64() * 1000.0);
+    tracing::info!(
+        "UIA engine ready in {:.1}ms",
+        startup.as_secs_f64() * 1000.0
+    );
 
     match cli.cmd {
         Command::Windows => {
@@ -131,10 +137,21 @@ async fn main() -> Result<()> {
             ms.sort_by(|a, b| a.partial_cmp(b).unwrap());
             println!("windows        : {count}");
             println!("startup        : {:.1} ms", startup.as_secs_f64() * 1000.0);
-            println!("list_windows   : min {:.1} ms  med {:.1} ms  max {:.1} ms  (n={})",
-                ms[0], ms[ms.len() / 2], ms[ms.len() - 1], runs);
+            println!(
+                "list_windows   : min {:.1} ms  med {:.1} ms  max {:.1} ms  (n={})",
+                ms[0],
+                ms[ms.len() / 2],
+                ms[ms.len() - 1],
+                runs
+            );
         }
-        Command::Serve { transport, host, port, auth_key, ip_allowlist } => {
+        Command::Serve {
+            transport,
+            host,
+            port,
+            auth_key,
+            ip_allowlist,
+        } => {
             guard::spawn_watcher();
             let allow: Vec<String> = ip_allowlist
                 .unwrap_or_default()
@@ -144,21 +161,34 @@ async fn main() -> Result<()> {
                 .collect();
             server::serve(engine, &transport, &host, port, auth_key, allow).await?;
         }
-        Command::Observe { detail, max_width, out, watch, interval_ms } => match detail.as_str() {
+        Command::Observe {
+            detail,
+            max_width,
+            out,
+            watch,
+            interval_ms,
+        } => match detail.as_str() {
             "text" => {
                 let wins = engine.list_windows().await?;
                 let d = engine
                     .discover(uia::DiscoverArgs {
-                        hwnd: None, max_depth: 24, max_elements: 400, ttl_secs: 60,
-                        filter: uia::Filter::Actionable, verbose: false,
+                        hwnd: None,
+                        max_depth: 24,
+                        max_elements: 400,
+                        ttl_secs: 60,
+                        filter: uia::Filter::Actionable,
+                        verbose: false,
                     })
                     .await
                     .ok();
-                println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                    "windows": wins.iter().map(|w| serde_json::json!({
-                        "name": w.name, "hwnd": w.hwnd, "pid": w.pid })).collect::<Vec<_>>(),
-                    "focused": d,
-                }))?);
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "windows": wins.iter().map(|w| serde_json::json!({
+                            "name": w.name, "hwnd": w.hwnd, "pid": w.pid })).collect::<Vec<_>>(),
+                        "focused": d,
+                    }))?
+                );
             }
             "image" | "diff" => {
                 let is_diff = detail == "diff";
@@ -176,22 +206,50 @@ async fn main() -> Result<()> {
             }
             other => anyhow::bail!("unknown detail '{other}' (text|image|diff)"),
         },
-        Command::Act { scope, path, action, value } => {
+        Command::Act {
+            scope,
+            path,
+            action,
+            value,
+        } => {
             let path: Vec<u32> = path
                 .split(',')
                 .filter(|s| !s.trim().is_empty())
                 .map(|s| s.trim().parse())
                 .collect::<std::result::Result<_, _>>()?;
-            let r = engine.act(uia::ActArgs { scope, path, action, value }).await?;
+            let r = engine
+                .act(uia::ActArgs {
+                    scope,
+                    path,
+                    action,
+                    value,
+                })
+                .await?;
             println!("{}", serde_json::to_string_pretty(&r)?);
         }
-        Command::Discover { hwnd, max_depth, max_elements, ttl, filter, verbose, summary, runs } => {
+        Command::Discover {
+            hwnd,
+            max_depth,
+            max_elements,
+            ttl,
+            filter,
+            verbose,
+            summary,
+            runs,
+        } => {
             anyhow::ensure!(runs >= 1, "--runs must be at least 1");
             let mut ms = Vec::new();
             let mut last = None;
             for _ in 0..runs {
                 let d = engine
-                    .discover(uia::DiscoverArgs { hwnd, max_depth, max_elements, ttl_secs: ttl, filter, verbose })
+                    .discover(uia::DiscoverArgs {
+                        hwnd,
+                        max_depth,
+                        max_elements,
+                        ttl_secs: ttl,
+                        filter,
+                        verbose,
+                    })
                     .await?;
                 ms.push(d.elapsed_ms);
                 last = Some(d);
@@ -206,8 +264,13 @@ async fn main() -> Result<()> {
                 if let Some(t) = &d.truncated {
                     println!("TRUNCATED  : {t}");
                 }
-                println!("discover   : min {:.1} ms  med {:.1} ms  max {:.1} ms  (n={})",
-                    ms[0], ms[ms.len() / 2], ms[ms.len() - 1], runs);
+                println!(
+                    "discover   : min {:.1} ms  med {:.1} ms  max {:.1} ms  (n={})",
+                    ms[0],
+                    ms[ms.len() / 2],
+                    ms[ms.len() - 1],
+                    runs
+                );
                 let json = serde_json::to_string(&d)?;
                 println!("json bytes : {}  (~{} tokens)", json.len(), json.len() / 4);
             } else {

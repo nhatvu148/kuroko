@@ -1,40 +1,42 @@
 //! Windows-only half of the UIA engine. Everything in here runs on the single
 //! `kuroko-uia` thread, so the COM pointers never escape their apartment.
 
-use super::{ActArgs, ActResult, Bounds, Cmd, DiscoverArgs, Discovery, EngineConfig, Entity, Filter, WindowInfo};
+use super::{
+    ActArgs, ActResult, Bounds, Cmd, DiscoverArgs, Discovery, EngineConfig, Entity, Filter,
+    WindowInfo,
+};
 use crate::lease::{now, Scope};
-use windows::core::BSTR;
-use windows::Win32::UI::WindowsAndMessaging::IsWindow;
+use anyhow::{anyhow, Result};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
-use anyhow::{anyhow, Result};
 use std::sync::mpsc::{Receiver, Sender};
+use windows::core::BSTR;
+use windows::Win32::Foundation::HWND;
 use windows::Win32::Foundation::RECT;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
 };
-use windows::Win32::Foundation::HWND;
-use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 use windows::Win32::UI::Accessibility::{
-    TreeScope, TreeScope_Element,
-    CUIAutomation, IUIAutomation, IUIAutomationElement, TreeScope_Children, TreeScope_Subtree,
+    CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationExpandCollapsePattern,
+    IUIAutomationInvokePattern, IUIAutomationSelectionItemPattern, IUIAutomationTogglePattern,
+    IUIAutomationValuePattern, TreeScope, TreeScope_Children, TreeScope_Element, TreeScope_Subtree,
     UIA_AutomationIdPropertyId, UIA_BoundingRectanglePropertyId, UIA_ButtonControlTypeId,
-    UIA_ClassNamePropertyId, UIA_ControlTypePropertyId, UIA_CONTROLTYPE_ID,
-    UIA_EditControlTypeId, UIA_ExpandCollapsePatternId, UIA_InvokePatternId,
+    UIA_CheckBoxControlTypeId, UIA_ClassNamePropertyId, UIA_ComboBoxControlTypeId,
+    UIA_ControlTypePropertyId, UIA_CustomControlTypeId, UIA_DocumentControlTypeId,
+    UIA_EditControlTypeId, UIA_ExpandCollapsePatternId, UIA_GroupControlTypeId,
+    UIA_HyperlinkControlTypeId, UIA_ImageControlTypeId, UIA_InvokePatternId,
     UIA_IsEnabledPropertyId, UIA_IsOffscreenPropertyId, UIA_ListControlTypeId,
-    UIA_MenuBarControlTypeId, UIA_MenuItemControlTypeId, UIA_NamePropertyId,
-    UIA_NativeWindowHandlePropertyId, UIA_PaneControlTypeId, UIA_ProcessIdPropertyId,
-    UIA_ScrollItemPatternId, UIA_SelectionItemPatternId, UIA_TabItemControlTypeId,
-    UIA_TextControlTypeId, UIA_TogglePatternId, UIA_ToolBarControlTypeId,
-    UIA_TreeControlTypeId, UIA_ValuePatternId, UIA_WindowControlTypeId,
-    UIA_GroupControlTypeId, UIA_TreeItemControlTypeId, UIA_ImageControlTypeId,
-    UIA_CheckBoxControlTypeId, UIA_ComboBoxControlTypeId, UIA_HyperlinkControlTypeId,
-    UIA_ListItemControlTypeId, UIA_RadioButtonControlTypeId, UIA_SplitButtonControlTypeId,
-    UIA_TabControlTypeId, UIA_CustomControlTypeId, UIA_DocumentControlTypeId,
-    UIA_TitleBarControlTypeId, UIA_StatusBarControlTypeId,
-    IUIAutomationExpandCollapsePattern, IUIAutomationInvokePattern,
-    IUIAutomationSelectionItemPattern, IUIAutomationTogglePattern, IUIAutomationValuePattern,
+    UIA_ListItemControlTypeId, UIA_MenuBarControlTypeId, UIA_MenuItemControlTypeId,
+    UIA_NamePropertyId, UIA_NativeWindowHandlePropertyId, UIA_PaneControlTypeId,
+    UIA_ProcessIdPropertyId, UIA_RadioButtonControlTypeId, UIA_ScrollItemPatternId,
+    UIA_SelectionItemPatternId, UIA_SplitButtonControlTypeId, UIA_StatusBarControlTypeId,
+    UIA_TabControlTypeId, UIA_TabItemControlTypeId, UIA_TextControlTypeId,
+    UIA_TitleBarControlTypeId, UIA_TogglePatternId, UIA_ToolBarControlTypeId,
+    UIA_TreeControlTypeId, UIA_TreeItemControlTypeId, UIA_ValuePatternId, UIA_WindowControlTypeId,
+    UIA_CONTROLTYPE_ID,
 };
+use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+use windows::Win32::UI::WindowsAndMessaging::IsWindow;
 
 pub(super) fn run(rx: Receiver<Cmd>, ready: Sender<Result<()>>, cfg: EngineConfig) {
     // MTA, not STA: UIA clients are explicitly documented to use the
@@ -67,7 +69,6 @@ pub(super) fn run(rx: Receiver<Cmd>, ready: Sender<Result<()>>, cfg: EngineConfi
             Cmd::Act(args, reply) => {
                 let _ = reply.send(act(&automation, &args, &cfg.lease_key));
             }
-            Cmd::Shutdown => break,
         }
     }
 
@@ -105,11 +106,17 @@ fn list_windows(a: &IUIAutomation) -> Result<Vec<WindowInfo>> {
             let r: RECT = el.CachedBoundingRectangle().unwrap_or_default();
             out.push(WindowInfo {
                 name: el.CachedName().map(|b| b.to_string()).unwrap_or_default(),
-                class_name: el.CachedClassName().map(|b| b.to_string()).unwrap_or_default(),
+                class_name: el
+                    .CachedClassName()
+                    .map(|b| b.to_string())
+                    .unwrap_or_default(),
                 control_type: control_type_name(
                     el.CachedControlType().unwrap_or(UIA_CONTROLTYPE_ID(0)),
                 ),
-                hwnd: el.CachedNativeWindowHandle().map(|h| h.0 as isize).unwrap_or(0),
+                hwnd: el
+                    .CachedNativeWindowHandle()
+                    .map(|h| h.0 as isize)
+                    .unwrap_or(0),
                 pid: el.CachedProcessId().unwrap_or(0),
                 bounds: Bounds {
                     x: r.left,
@@ -123,6 +130,7 @@ fn list_windows(a: &IUIAutomation) -> Result<Vec<WindowInfo>> {
     }
 }
 
+#[allow(non_upper_case_globals)] // windows-rs constants are not UPPER_CASE
 fn control_type_name(id: UIA_CONTROLTYPE_ID) -> String {
     let s = match id {
         UIA_WindowControlTypeId => "window",
@@ -154,7 +162,6 @@ fn control_type_name(id: UIA_CONTROLTYPE_ID) -> String {
     };
     s.to_string()
 }
-
 
 /// Walk one window's subtree and return everything worth acting on.
 ///
@@ -210,25 +217,45 @@ fn discover(a: &IUIAutomation, args: &DiscoverArgs, key: &[u8]) -> Result<Discov
 
         let wr: RECT = cached.CachedBoundingRectangle().unwrap_or_default();
         let window = WindowInfo {
-            name: cached.CachedName().map(|b| b.to_string()).unwrap_or_default(),
-            class_name: cached.CachedClassName().map(|b| b.to_string()).unwrap_or_default(),
+            name: cached
+                .CachedName()
+                .map(|b| b.to_string())
+                .unwrap_or_default(),
+            class_name: cached
+                .CachedClassName()
+                .map(|b| b.to_string())
+                .unwrap_or_default(),
             control_type: control_type_name(
                 cached.CachedControlType().unwrap_or(UIA_CONTROLTYPE_ID(0)),
             ),
             hwnd: hwnd.0 as isize,
             pid: cached.CachedProcessId().unwrap_or(0),
-            bounds: Bounds { x: wr.left, y: wr.top, w: wr.right - wr.left, h: wr.bottom - wr.top },
+            bounds: Bounds {
+                x: wr.left,
+                y: wr.top,
+                w: wr.right - wr.left,
+                h: wr.bottom - wr.top,
+            },
         };
         let generation = generation_of(&window);
 
         let mut entities = Vec::new();
         let mut truncated = None;
         let exp = now() + args.ttl_secs;
-        let scope = Scope { hwnd: window.hwnd, generation, exp }.encode(key)?;
+        let scope = Scope {
+            hwnd: window.hwnd,
+            generation,
+            exp,
+        }
+        .encode(key)?;
 
         walk(
-            &cached, &mut Vec::new(), 0, args, &mut entities, &mut truncated,
-            &window, generation, exp, key,
+            &cached,
+            &mut Vec::new(),
+            0,
+            args,
+            &mut entities,
+            &mut truncated,
         )?;
 
         Ok(Discovery {
@@ -242,7 +269,6 @@ fn discover(a: &IUIAutomation, args: &DiscoverArgs, key: &[u8]) -> Result<Discov
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 unsafe fn walk(
     el: &IUIAutomationElement,
     path: &mut Vec<u32>,
@@ -250,10 +276,6 @@ unsafe fn walk(
     args: &DiscoverArgs,
     out: &mut Vec<Entity>,
     truncated: &mut Option<String>,
-    window: &WindowInfo,
-    generation: u64,
-    exp: u64,
-    key: &[u8],
 ) -> Result<()> {
     if out.len() >= args.max_elements {
         *truncated = Some(format!("element cap {} reached", args.max_elements));
@@ -269,7 +291,7 @@ unsafe fn walk(
         // the model to aim at something the user cannot see.
         let offscreen = el.CachedIsOffscreen().map(|b| b.as_bool()).unwrap_or(false);
         if !offscreen {
-            if let Some(e) = to_entity(el, path, window, generation, exp, key, args)? {
+            if let Some(e) = to_entity(el, path, args)? {
                 out.push(e);
             }
         }
@@ -283,7 +305,7 @@ unsafe fn walk(
     for i in 0..n {
         let child = kids.GetElement(i)?;
         path.push(i as u32);
-        walk(&child, path, depth + 1, args, out, truncated, window, generation, exp, key)?;
+        walk(&child, path, depth + 1, args, out, truncated)?;
         path.pop();
     }
     Ok(())
@@ -292,16 +314,14 @@ unsafe fn walk(
 unsafe fn to_entity(
     el: &IUIAutomationElement,
     path: &[u32],
-    window: &WindowInfo,
-    generation: u64,
-    exp: u64,
-    key: &[u8],
     args: &DiscoverArgs,
 ) -> Result<Option<Entity>> {
     let name = el.CachedName().map(|b| b.to_string()).unwrap_or_default();
-    let automation_id = el.CachedAutomationId().map(|b| b.to_string()).unwrap_or_default();
-    let control_type =
-        control_type_name(el.CachedControlType().unwrap_or(UIA_CONTROLTYPE_ID(0)));
+    let automation_id = el
+        .CachedAutomationId()
+        .map(|b| b.to_string())
+        .unwrap_or_default();
+    let control_type = control_type_name(el.CachedControlType().unwrap_or(UIA_CONTROLTYPE_ID(0)));
 
     let mut actions = Vec::new();
     if el.GetCachedPattern(UIA_InvokePatternId).is_ok() {
@@ -341,11 +361,15 @@ unsafe fn to_entity(
     }
 
     let r: RECT = el.CachedBoundingRectangle().unwrap_or_default();
-    let bounds = Bounds { x: r.left, y: r.top, w: r.right - r.left, h: r.bottom - r.top };
+    let bounds = Bounds {
+        x: r.left,
+        y: r.top,
+        w: r.right - r.left,
+        h: r.bottom - r.top,
+    };
     if bounds.w <= 0 || bounds.h <= 0 {
         return Ok(None);
     }
-
 
     // An element with neither a name nor an automation id cannot be referred to
     // by a caller and is almost always layout scaffolding - most of the payload
@@ -378,7 +402,6 @@ fn generation_of(w: &WindowInfo) -> u64 {
     h.finish()
 }
 
-
 macro_rules! guard {
     ($status:expr, $action:expr, $target:expr, $t0:expr, $detail:expr) => {
         return Ok(ActResult {
@@ -406,8 +429,13 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
     unsafe {
         let hwnd = HWND(scope.hwnd as *mut core::ffi::c_void);
         if !IsWindow(Some(hwnd)).as_bool() {
-            guard!("identity_changed", args.action, String::new(), t0,
-                   "the window no longer exists".to_string());
+            guard!(
+                "identity_changed",
+                args.action,
+                String::new(),
+                t0,
+                "the window no longer exists".to_string()
+            );
         }
 
         // Walk the path one level at a time instead of marshalling the whole
@@ -421,8 +449,11 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
         nav.SetTreeScope(TreeScope(TreeScope_Element.0 | TreeScope_Children.0))?;
         nav.SetTreeFilter(&a.ControlViewCondition()?)?;
         for prop in [
-            UIA_NamePropertyId, UIA_ClassNamePropertyId, UIA_ControlTypePropertyId,
-            UIA_BoundingRectanglePropertyId, UIA_ProcessIdPropertyId,
+            UIA_NamePropertyId,
+            UIA_ClassNamePropertyId,
+            UIA_ControlTypePropertyId,
+            UIA_BoundingRectanglePropertyId,
+            UIA_ProcessIdPropertyId,
         ] {
             nav.AddProperty(prop)?;
         }
@@ -431,15 +462,20 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
         let leaf = a.CreateCacheRequest()?;
         leaf.SetTreeScope(TreeScope_Element)?;
         for prop in [
-            UIA_NamePropertyId, UIA_ControlTypePropertyId,
-            UIA_BoundingRectanglePropertyId, UIA_IsEnabledPropertyId,
+            UIA_NamePropertyId,
+            UIA_ControlTypePropertyId,
+            UIA_BoundingRectanglePropertyId,
+            UIA_IsEnabledPropertyId,
             UIA_IsOffscreenPropertyId,
         ] {
             leaf.AddProperty(prop)?;
         }
         for pat in [
-            UIA_InvokePatternId, UIA_ValuePatternId, UIA_TogglePatternId,
-            UIA_ExpandCollapsePatternId, UIA_SelectionItemPatternId,
+            UIA_InvokePatternId,
+            UIA_ValuePatternId,
+            UIA_TogglePatternId,
+            UIA_ExpandCollapsePatternId,
+            UIA_SelectionItemPatternId,
         ] {
             leaf.AddPattern(pat)?;
         }
@@ -449,16 +485,35 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
         // Guard 1: is this still the same window we were handed a scope for?
         let wr: RECT = cached.CachedBoundingRectangle().unwrap_or_default();
         let win = WindowInfo {
-            name: cached.CachedName().map(|b| b.to_string()).unwrap_or_default(),
-            class_name: cached.CachedClassName().map(|b| b.to_string()).unwrap_or_default(),
-            control_type: control_type_name(cached.CachedControlType().unwrap_or(UIA_CONTROLTYPE_ID(0))),
+            name: cached
+                .CachedName()
+                .map(|b| b.to_string())
+                .unwrap_or_default(),
+            class_name: cached
+                .CachedClassName()
+                .map(|b| b.to_string())
+                .unwrap_or_default(),
+            control_type: control_type_name(
+                cached.CachedControlType().unwrap_or(UIA_CONTROLTYPE_ID(0)),
+            ),
             hwnd: scope.hwnd,
             pid: cached.CachedProcessId().unwrap_or(0),
-            bounds: Bounds { x: wr.left, y: wr.top, w: wr.right - wr.left, h: wr.bottom - wr.top },
+            bounds: Bounds {
+                x: wr.left,
+                y: wr.top,
+                w: wr.right - wr.left,
+                h: wr.bottom - wr.top,
+            },
         };
         if generation_of(&win) != scope.generation {
-            guard!("identity_changed", args.action, win.name, t0,
-                   "window was replaced, retitled or resized since discovery - re-discover".to_string());
+            guard!(
+                "identity_changed",
+                args.action,
+                win.name,
+                t0,
+                "window was replaced, retitled or resized since discovery - re-discover"
+                    .to_string()
+            );
         }
 
         // Guard 2: does the path still lead somewhere?
@@ -467,12 +522,22 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
         for (i, idx) in args.path.iter().enumerate() {
             let kids = match el.GetCachedChildren() {
                 Ok(k) => k,
-                Err(_) => guard!("not_found", args.action, win.name, t0,
-                                 format!("path ran out of children at depth {i}")),
+                Err(_) => guard!(
+                    "not_found",
+                    args.action,
+                    win.name,
+                    t0,
+                    format!("path ran out of children at depth {i}")
+                ),
             };
             if *idx >= kids.Length().unwrap_or(0) as u32 {
-                guard!("not_found", args.action, win.name, t0,
-                       format!("path index {idx} out of range at depth {i}"));
+                guard!(
+                    "not_found",
+                    args.action,
+                    win.name,
+                    t0,
+                    format!("path index {idx} out of range at depth {i}")
+                );
             }
             let child = kids.GetElement(*idx as i32)?;
             // Re-cache as we descend: the child arrived with only its own
@@ -488,35 +553,71 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
 
         // Guard 3: is it in a state where acting makes sense?
         if !el.CachedIsEnabled().map(|b| b.as_bool()).unwrap_or(true) {
-            guard!("disabled", args.action, target, t0, "control is disabled".to_string());
+            guard!(
+                "disabled",
+                args.action,
+                target,
+                t0,
+                "control is disabled".to_string()
+            );
         }
         if el.CachedIsOffscreen().map(|b| b.as_bool()).unwrap_or(false) {
-            guard!("moved", args.action, target, t0, "control is offscreen".to_string());
+            guard!(
+                "moved",
+                args.action,
+                target,
+                t0,
+                "control is offscreen".to_string()
+            );
         }
 
         let ok_detail = match args.action.as_str() {
-            "click" => el.GetCachedPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)
+            "click" => el
+                .GetCachedPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)
                 .map(|p| p.Invoke().map(|_| "invoked".to_string())),
             "type" => {
                 let v = args.value.clone().unwrap_or_default();
                 el.GetCachedPatternAs::<IUIAutomationValuePattern>(UIA_ValuePatternId)
-                    .map(|p| p.SetValue(&BSTR::from(v.as_str())).map(|_| format!("set {} chars", v.len())))
+                    .map(|p| {
+                        p.SetValue(&BSTR::from(v.as_str()))
+                            .map(|_| format!("set {} chars", v.len()))
+                    })
             }
-            "toggle" => el.GetCachedPatternAs::<IUIAutomationTogglePattern>(UIA_TogglePatternId)
+            "toggle" => el
+                .GetCachedPatternAs::<IUIAutomationTogglePattern>(UIA_TogglePatternId)
                 .map(|p| p.Toggle().map(|_| "toggled".to_string())),
-            "expand" => el.GetCachedPatternAs::<IUIAutomationExpandCollapsePattern>(UIA_ExpandCollapsePatternId)
+            "expand" => el
+                .GetCachedPatternAs::<IUIAutomationExpandCollapsePattern>(
+                    UIA_ExpandCollapsePatternId,
+                )
                 .map(|p| p.Expand().map(|_| "expanded".to_string())),
-            "select" => el.GetCachedPatternAs::<IUIAutomationSelectionItemPattern>(UIA_SelectionItemPatternId)
+            "select" => el
+                .GetCachedPatternAs::<IUIAutomationSelectionItemPattern>(UIA_SelectionItemPatternId)
                 .map(|p| p.Select().map(|_| "selected".to_string())),
-            other => guard!("pattern_gone", args.action, target, t0,
-                            format!("unknown action '{other}'")),
+            other => guard!(
+                "pattern_gone",
+                args.action,
+                target,
+                t0,
+                format!("unknown action '{other}'")
+            ),
         };
 
         match ok_detail {
-            Err(_) => guard!("pattern_gone", args.action, target, t0,
-                             format!("control no longer supports '{}'", args.action)),
-            Ok(Err(e)) => guard!("pattern_gone", args.action, target, t0,
-                                 format!("pattern call failed: {e}")),
+            Err(_) => guard!(
+                "pattern_gone",
+                args.action,
+                target,
+                t0,
+                format!("control no longer supports '{}'", args.action)
+            ),
+            Ok(Err(e)) => guard!(
+                "pattern_gone",
+                args.action,
+                target,
+                t0,
+                format!("pattern call failed: {e}")
+            ),
             Ok(Ok(detail)) => Ok(ActResult {
                 ok: true,
                 action: args.action.clone(),

@@ -133,7 +133,6 @@ enum Cmd {
     ListWindows(oneshot::Sender<Result<Vec<WindowInfo>>>),
     Discover(DiscoverArgs, oneshot::Sender<Result<Discovery>>),
     Act(ActArgs, oneshot::Sender<Result<ActResult>>),
-    Shutdown,
 }
 
 /// Handle to the UIA thread. Cloneable; the thread stops when all handles drop
@@ -180,7 +179,8 @@ impl Engine {
         self.tx
             .send(Cmd::Discover(args, rtx))
             .map_err(|_| anyhow!("UIA thread is gone"))?;
-        rrx.await.map_err(|_| anyhow!("UIA thread dropped the reply"))?
+        rrx.await
+            .map_err(|_| anyhow!("UIA thread dropped the reply"))?
     }
 
     pub async fn act(&self, args: ActArgs) -> Result<ActResult> {
@@ -188,7 +188,8 @@ impl Engine {
         self.tx
             .send(Cmd::Act(args, rtx))
             .map_err(|_| anyhow!("UIA thread is gone"))?;
-        rrx.await.map_err(|_| anyhow!("UIA thread dropped the reply"))?
+        rrx.await
+            .map_err(|_| anyhow!("UIA thread dropped the reply"))?
     }
 
     pub async fn list_windows(&self) -> Result<Vec<WindowInfo>> {
@@ -196,7 +197,8 @@ impl Engine {
         self.tx
             .send(Cmd::ListWindows(rtx))
             .map_err(|_| anyhow!("UIA thread is gone"))?;
-        rrx.await.map_err(|_| anyhow!("UIA thread dropped the reply"))?
+        rrx.await
+            .map_err(|_| anyhow!("UIA thread dropped the reply"))?
     }
 }
 

@@ -65,8 +65,12 @@ impl Scope {
         let (p, s) = token
             .split_once('.')
             .ok_or_else(|| anyhow!("malformed lease"))?;
-        let json = B64.decode(p).map_err(|_| anyhow!("malformed lease payload"))?;
-        let sig = B64.decode(s).map_err(|_| anyhow!("malformed lease signature"))?;
+        let json = B64
+            .decode(p)
+            .map_err(|_| anyhow!("malformed lease payload"))?;
+        let sig = B64
+            .decode(s)
+            .map_err(|_| anyhow!("malformed lease signature"))?;
 
         let mut mac = HmacSha256::new_from_slice(key).map_err(|e| anyhow!("bad key: {e}"))?;
         mac.update(&json);
@@ -100,4 +104,86 @@ pub fn new_key() -> Result<Vec<u8>> {
     let mut k = [0u8; 32];
     getrandom::fill(&mut k).map_err(|e| anyhow!("getrandom failed: {e}"))?;
     Ok(k.to_vec())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key() -> Vec<u8> {
+        vec![7u8; 32]
+    }
+
+    fn scope(exp_offset: i64) -> Scope {
+        Scope {
+            hwnd: 0x1234,
+            generation: 0xdead_beef,
+            exp: (now() as i64 + exp_offset) as u64,
+        }
+    }
+
+    #[test]
+    fn round_trips() {
+        let s = scope(60);
+        let back = Scope::decode(&s.encode(&key()).unwrap(), &key()).unwrap();
+        assert_eq!(back.hwnd, s.hwnd);
+        assert_eq!(back.generation, s.generation);
+        assert_eq!(back.exp, s.exp);
+    }
+
+    #[test]
+    fn rejects_a_different_key() {
+        let token = scope(60).encode(&key()).unwrap();
+        let err = Scope::decode(&token, &[9u8; 32]).unwrap_err().to_string();
+        assert!(err.contains("signature"), "unexpected error: {err}");
+    }
+
+    /// The payload is what authorises a window; flipping a bit in it must not
+    /// survive verification, or the signature is decoration.
+    #[test]
+    fn rejects_a_tampered_payload() {
+        let token = scope(60).encode(&key()).unwrap();
+        let (payload, sig) = token.split_once('.').unwrap();
+        let mut raw = B64.decode(payload).unwrap();
+        let i = raw.len() / 2;
+        raw[i] ^= 0x01;
+        let forged = format!("{}.{}", B64.encode(&raw), sig);
+        assert!(Scope::decode(&forged, &key()).is_err());
+    }
+
+    #[test]
+    fn rejects_a_tampered_signature() {
+        let token = scope(60).encode(&key()).unwrap();
+        let (payload, sig) = token.split_once('.').unwrap();
+        let mut raw = B64.decode(sig).unwrap();
+        raw[0] ^= 0x01;
+        let forged = format!("{payload}.{}", B64.encode(&raw));
+        assert!(Scope::decode(&forged, &key()).is_err());
+    }
+
+    #[test]
+    fn rejects_an_expired_scope() {
+        let token = scope(-1).encode(&key()).unwrap();
+        let err = Scope::decode(&token, &key()).unwrap_err().to_string();
+        assert!(err.contains("expired"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn rejects_malformed_tokens() {
+        for bad in ["", "nodot", "a.b", ".", "....", "!!!.???"] {
+            assert!(
+                Scope::decode(bad, &key()).is_err(),
+                "accepted malformed token {bad:?}"
+            );
+        }
+    }
+
+    /// A 128-bit tag is the deliberate size; a regression to a full 256-bit tag
+    /// would silently double the per-response cost the scope design exists to avoid.
+    #[test]
+    fn signature_is_truncated_to_128_bits() {
+        let token = scope(60).encode(&key()).unwrap();
+        let sig = token.split_once('.').unwrap().1;
+        assert_eq!(B64.decode(sig).unwrap().len(), 16);
+    }
 }

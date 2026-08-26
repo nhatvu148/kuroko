@@ -67,7 +67,10 @@ impl Kuroko {
         Self { engine, allowlist }
     }
 
-    #[tool(name = "windows", description = "List top-level windows with their handles, pids and bounds.")]
+    #[tool(
+        name = "windows",
+        description = "List top-level windows with their handles, pids and bounds."
+    )]
     async fn windows(&self) -> Result<Json<serde_json::Value>, McpError> {
         let w = self
             .engine
@@ -110,7 +113,10 @@ impl Kuroko {
                        unchanged and the element is still present and enabled before doing anything; \
                        a non-ok `status` means nothing was done and you should discover again."
     )]
-    async fn act(&self, Parameters(p): Parameters<ActParams>) -> Result<Json<uia::ActResult>, McpError> {
+    async fn act(
+        &self,
+        Parameters(p): Parameters<ActParams>,
+    ) -> Result<Json<uia::ActResult>, McpError> {
         if guard::engaged() {
             return Err(McpError::internal_error(guard::refusal(), None));
         }
@@ -155,15 +161,18 @@ impl Kuroko {
                 .await
                 .ok();
             let v = serde_json::json!({ "windows": wins, "focused": focused });
-            return Ok(CallToolResult::success(vec![ContentBlock::text(v.to_string())]));
+            return Ok(CallToolResult::success(vec![ContentBlock::text(
+                v.to_string(),
+            )]));
         }
 
         let is_diff = detail == "diff";
         let max_width = p.max_width.unwrap_or(1400);
-        let (obs, png) = tokio::task::spawn_blocking(move || capture::observe_bytes(is_diff, max_width))
-            .await
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+        let (obs, png) =
+            tokio::task::spawn_blocking(move || capture::observe_bytes(is_diff, max_width))
+                .await
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?
+                .map_err(|e| McpError::internal_error(e.to_string(), None))?;
 
         let meta = serde_json::to_string(&obs).unwrap_or_default();
         let mut out = vec![ContentBlock::text(meta)];
@@ -171,7 +180,10 @@ impl Kuroko {
         // unrepresentative - the metadata already says what happened.
         if !png.is_empty() {
             use base64::{engine::general_purpose::STANDARD as B64S, Engine};
-            out.push(ContentBlock::image(B64S.encode(&png), "image/png".to_string()));
+            out.push(ContentBlock::image(
+                B64S.encode(&png),
+                "image/png".to_string(),
+            ));
         }
         Ok(CallToolResult::success(out))
     }
@@ -181,12 +193,15 @@ impl Kuroko {
         description = "Start an application. Only names present in the server's launch allowlist \
                        are permitted; there is no way to run an arbitrary command."
     )]
-    async fn launch(&self, Parameters(p): Parameters<LaunchParams>) -> Result<Json<serde_json::Value>, McpError> {
+    async fn launch(
+        &self,
+        Parameters(p): Parameters<LaunchParams>,
+    ) -> Result<Json<serde_json::Value>, McpError> {
         if guard::engaged() {
             return Err(McpError::internal_error(guard::refusal(), None));
         }
         let want = p.name.trim().to_lowercase();
-        if !self.allowlist.iter().any(|a| *a == want) {
+        if !self.allowlist.contains(&want) {
             return Err(McpError::invalid_params(
                 format!(
                     "'{}' is not in the launch allowlist ({} entries). Add it to \
@@ -302,41 +317,43 @@ async fn serve_http(
     let allow_count = ip_allowlist.len();
     let allow = std::sync::Arc::new(ip_allowlist);
 
-    let app = axum::Router::new().nest_service("/mcp", svc).layer(
-        axum::middleware::from_fn(move |req: axum::extract::Request, next: axum::middleware::Next| {
-            let key = key.clone();
-            let allow = allow.clone();
-            async move {
-                // Peer address first: an unauthorised source should not even get
-                // to present a token, and a wrong token should not reveal
-                // whether the address would have been accepted.
-                if !allow.is_empty() {
-                    let ip = req
-                        .extensions()
-                        .get::<ConnectInfo<SocketAddr>>()
-                        .map(|c| c.0.ip().to_string())
-                        .unwrap_or_default();
-                    if !allow.iter().any(|a| *a == ip) {
-                        tracing::warn!("rejected connection from {ip}");
-                        return Err(StatusCode::FORBIDDEN);
+    let app = axum::Router::new()
+        .nest_service("/mcp", svc)
+        .layer(axum::middleware::from_fn(
+            move |req: axum::extract::Request, next: axum::middleware::Next| {
+                let key = key.clone();
+                let allow = allow.clone();
+                async move {
+                    // Peer address first: an unauthorised source should not even get
+                    // to present a token, and a wrong token should not reveal
+                    // whether the address would have been accepted.
+                    if !allow.is_empty() {
+                        let ip = req
+                            .extensions()
+                            .get::<ConnectInfo<SocketAddr>>()
+                            .map(|c| c.0.ip().to_string())
+                            .unwrap_or_default();
+                        if !allow.contains(&ip) {
+                            tracing::warn!("rejected connection from {ip}");
+                            return Err(StatusCode::FORBIDDEN);
+                        }
                     }
-                }
-                if let Some(k) = key.as_ref() {
-                    let ok = req
-                        .headers()
-                        .get(axum::http::header::AUTHORIZATION)
-                        .and_then(|v| v.to_str().ok())
-                        .and_then(|v| v.strip_prefix("Bearer "))
-                        .map(|t| constant_time_eq(t.as_bytes(), k.as_bytes()))
-                        .unwrap_or(false);
-                    if !ok {
-                        return Err(StatusCode::UNAUTHORIZED);
+                    if let Some(k) = key.as_ref() {
+                        let ok = req
+                            .headers()
+                            .get(axum::http::header::AUTHORIZATION)
+                            .and_then(|v| v.to_str().ok())
+                            .and_then(|v| v.strip_prefix("Bearer "))
+                            .map(|t| constant_time_eq(t.as_bytes(), k.as_bytes()))
+                            .unwrap_or(false);
+                        if !ok {
+                            return Err(StatusCode::UNAUTHORIZED);
+                        }
                     }
+                    Ok(next.run(req).await)
                 }
-                Ok(next.run(req).await)
-            }
-        }),
-    );
+            },
+        ));
 
     // `SocketAddr::from_str` neither resolves names nor tolerates an unbracketed
     // IPv6 literal, so the loopback check above accepted "localhost" and "::1"
