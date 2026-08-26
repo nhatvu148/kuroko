@@ -1,0 +1,47 @@
+[package]
+name = "kuroko"
+version = "0.1.0"
+edition = "2021"
+description = "Elevated Windows desktop automation over MCP - pure Rust, single binary"
+license = "MIT"
+
+[dependencies]
+anyhow = "1.0.104"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4.6", features = ["derive", "env"] }
+hmac = "0.13.0"
+sha2 = "0.11.0"
+base64 = "0.23.1"
+getrandom = "0.4.3"
+# png only - the other decoders would bloat a binary that never reads images
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+rmcp = { version = "3.1.4", features = [
+  "server", "macros", "schemars",
+  "transport-io",                      # stdio, for local Claude Code
+  "transport-streamable-http-server",  # remote, over Tailscale
+  "server-side-http",
+] }
+schemars = "1.2.2"
+axum = "0.8.9"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = [
+  "Win32_Foundation",
+  "Win32_System_Com",
+  "Win32_System_Variant",
+  "Win32_UI_Accessibility",
+  "Win32_UI_WindowsAndMessaging",
+  "Win32_Graphics_Gdi",
+  "Win32_Security",
+  "Win32_Security_Authorization",
+] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true

@@ -52,8 +52,9 @@ happened.
 **Patterns, not synthetic input.** `Invoke()` reaches a control without stealing focus, moving the
 cursor, or requiring the window to be on top.
 
-**Stateless.** The scope is a signed token, not a session key. A restart does not invalidate work in
-flight.
+**Stateless.** The scope is a signed token, not a session key - there is no lease table to look up,
+expire or garbage-collect. The signing key is generated per process and never written to disk, so a
+restart does rotate it; scopes live 60 seconds, which makes that a non-event.
 
 ## Measured
 
@@ -74,7 +75,9 @@ Latency is app-dependent; Task Manager is slow for both.
   agent should stop it touching things, not blind it.
 - **Auth** — bearer token, constant-time compare, optional IP allowlist. Refuses to bind a
   non-loopback address without a key.
-- **`launch`** — allowlist only; a missing allowlist file permits nothing.
+- **`launch`** — allowlist only. A missing allowlist permits nothing, and so does one that cannot be
+  stamped with a High mandatory label: an allowlist a Medium-integrity process could append to is a
+  privilege-escalation path, not a config inconvenience.
 
 ## Limits
 
