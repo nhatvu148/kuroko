@@ -319,6 +319,13 @@ pub fn observe_bytes(diff: bool, max_width: u32) -> Result<(Observation, Vec<u8>
     Ok((obs, png))
 }
 
+/// Native-resolution PNG. OCR needs this rather than the downscaled image the
+/// observe path produces: every coordinate it returns is in image space, so
+/// shrinking the input first would shrink every answer with it.
+pub fn encode_png_native(f: &Frame) -> Result<Vec<u8>> {
+    encode_png(f, 0).map(|(png, _, _, _)| png)
+}
+
 /// CLI convenience wrapper: same thing, but writes the PNG to disk.
 pub fn observe(diff: bool, max_width: u32, out_path: Option<&str>) -> Result<Observation> {
     let (obs, png) = observe_bytes(diff, max_width)?;
