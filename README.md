@@ -79,6 +79,41 @@ Latency is app-dependent; Task Manager is slow for both.
   stamped with a High mandatory label: an allowlist a Medium-integrity process could append to is a
   privilege-escalation path, not a config inconvenience.
 
+## What is actually verified
+
+Everything below was exercised by hand on **one machine**: Windows 11 Home 25H2,
+x86_64, a single 1920x1080 display at origin (0,0), en-US.
+
+| | status |
+|---|---|
+| `discover` / `act` / `observe` | verified against VS Code, Task Manager and an elevated shell |
+| emergency stop, allowlist fail-closed, HTTP auth | verified end to end |
+| lease signing, diff heuristics, stop state machine | unit tested (21 tests) |
+| **display scaling** | verified at **100%, 125%, 150% and 175%** — see below |
+| **multiple monitors** | **NOT verified** — no second display available. Negative-origin handling is unit tested only |
+| Windows 10, Server, ARM64 | not tested |
+| non-English locale | not tested. `App`-by-name matches localised UIA `Name` values |
+
+### Display scaling
+
+| scale | dpi | window bounds | a titlebar button's `click_at` | `act` |
+|---|---|---|---|---|
+| 100% | 96 | 1920x1080 | — | ok |
+| 125% | 120 | 1936x1036 | (1777, 21) | ok, window minimised |
+| 150% | 144 | 1936x1024 | (1749, 25) | ok, window minimised |
+| 175% | 168 | 1936x1012 | (1722, 30) | ok, window minimised |
+
+Two things make this more than four passing checks. The button moves left and
+down monotonically as scale rises, because titlebar controls grow with it -
+which is what physical-pixel reporting should produce, where a virtualised build
+would report coordinates shrinking toward the origin. And 175% is the case that
+could have failed: 1920 / 1.75 = 1097.14 does not divide cleanly, so rounding
+artifacts would surface there.
+
+`kuroko displays` prints the process's DPI awareness and each monitor's real
+scale factor. If it reports `scale: 1.0` everywhere you have tested, you have not
+tested scaling — and a DPI-unaware build looks entirely healthy at 100%.
+
 ## Limits
 
 - Apps that draw their own UI expose no tree. Abaqus/CAE returns six elements, all window chrome.
