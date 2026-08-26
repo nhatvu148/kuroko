@@ -11,7 +11,7 @@
 //! so it stays engaged for a cooldown after the corner is vacated, which is
 //! long enough to actually take control back.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 /// How close to (0,0) counts as "parked".
@@ -22,9 +22,6 @@ const HOLD: Duration = Duration::from_millis(500);
 const COOLDOWN: Duration = Duration::from_secs(30);
 
 static ENGAGED: AtomicBool = AtomicBool::new(false);
-/// Millis-since-start when the cooldown expires. Compared against a monotonic
-/// counter the watcher owns, so no wall-clock dependency.
-static RELEASE_AT: AtomicU64 = AtomicU64::new(0);
 
 pub fn engaged() -> bool {
     ENGAGED.load(Ordering::Relaxed)
@@ -38,6 +35,39 @@ pub fn refusal() -> String {
         .to_string()
 }
 
+/// The stop's decision logic, extracted from the thread that drives it.
+///
+/// A kill switch whose behaviour can only be exercised by physically moving a
+/// mouse is a kill switch nobody tests. Everything that decides *when* the stop
+/// engages and releases lives here, as a pure state machine over ticks.
+#[derive(Debug, Default)]
+pub struct EstopState {
+    parked_ms: u64,
+    engaged: bool,
+    release_at_ms: u64,
+}
+
+impl EstopState {
+    /// Advance one tick. Returns whether the stop is engaged afterwards.
+    pub fn step(&mut self, now_ms: u64, tick_ms: u64, in_corner: bool) -> bool {
+        if in_corner {
+            self.parked_ms = self.parked_ms.saturating_add(tick_ms);
+            if self.parked_ms >= HOLD.as_millis() as u64 {
+                self.engaged = true;
+                // Refreshed every tick the cursor stays parked, so the cooldown
+                // counts from when it *leaves*, not from when it arrived.
+                self.release_at_ms = now_ms.saturating_add(COOLDOWN.as_millis() as u64);
+            }
+        } else {
+            self.parked_ms = 0;
+            if self.engaged && now_ms >= self.release_at_ms {
+                self.engaged = false;
+            }
+        }
+        self.engaged
+    }
+}
+
 #[cfg(windows)]
 pub fn spawn_watcher() {
     use windows::Win32::Foundation::POINT;
@@ -47,34 +77,29 @@ pub fn spawn_watcher() {
         .name("kuroko-estop".into())
         .spawn(|| {
             let tick = Duration::from_millis(100);
-            let mut elapsed_ms: u64 = 0;
-            let mut parked_ms: u64 = 0;
+            let tick_ms = tick.as_millis() as u64;
+            let mut now_ms: u64 = 0;
+            let mut state = EstopState::default();
+            let mut was = false;
             loop {
                 std::thread::sleep(tick);
-                elapsed_ms += tick.as_millis() as u64;
+                now_ms += tick_ms;
 
                 let mut pt = POINT::default();
                 let in_corner = unsafe { GetCursorPos(&mut pt) }.is_ok()
                     && pt.x.abs() <= CORNER_PX
                     && pt.y.abs() <= CORNER_PX;
 
-                if in_corner {
-                    parked_ms += tick.as_millis() as u64;
-                    if parked_ms >= HOLD.as_millis() as u64 {
-                        if !ENGAGED.swap(true, Ordering::Relaxed) {
-                            tracing::warn!("EMERGENCY STOP engaged (cursor parked at origin)");
-                        }
-                        RELEASE_AT.store(elapsed_ms + COOLDOWN.as_millis() as u64, Ordering::Relaxed);
-                    }
-                } else {
-                    parked_ms = 0;
-                    if ENGAGED.load(Ordering::Relaxed)
-                        && elapsed_ms >= RELEASE_AT.load(Ordering::Relaxed)
-                    {
-                        ENGAGED.store(false, Ordering::Relaxed);
+                let engaged = state.step(now_ms, tick_ms, in_corner);
+                if engaged != was {
+                    if engaged {
+                        tracing::warn!("EMERGENCY STOP engaged (cursor parked at origin)");
+                    } else {
                         tracing::warn!("emergency stop released");
                     }
+                    was = engaged;
                 }
+                ENGAGED.store(engaged, Ordering::Relaxed);
             }
         })
         .expect("spawn estop watcher");
@@ -106,11 +131,7 @@ pub fn load_allowlist() -> Vec<String> {
         return Vec::new();
     }
     match read_protected(&path) {
-        Ok(s) => s
-            .lines()
-            .map(|l| l.trim().to_lowercase())
-            .filter(|l| !l.is_empty() && !l.starts_with('#'))
-            .collect(),
+        Ok(s) => parse_allowlist(&s),
         Err(e) => {
             tracing::error!(
                 "refusing to load the launch allowlist at {} ({e}). `launch` will permit nothing.",
@@ -119,6 +140,15 @@ pub fn load_allowlist() -> Vec<String> {
             Vec::new()
         }
     }
+}
+
+/// Entries are lower-cased for case-insensitive matching, blank lines and
+/// `#` comments dropped.
+pub fn parse_allowlist(s: &str) -> Vec<String> {
+    s.lines()
+        .map(|l| l.trim().to_lowercase())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .collect()
 }
 
 fn allowlist_path() -> std::path::PathBuf {
@@ -131,9 +161,10 @@ fn allowlist_path() -> std::path::PathBuf {
 
 /// SDDL for "no write up" at High integrity, as a SACL.
 #[cfg(windows)]
-unsafe fn high_integrity_sacl(
-) -> anyhow::Result<(*mut windows::Win32::Security::ACL, windows::Win32::Security::PSECURITY_DESCRIPTOR)>
-{
+unsafe fn high_integrity_sacl() -> anyhow::Result<(
+    *mut windows::Win32::Security::ACL,
+    windows::Win32::Security::PSECURITY_DESCRIPTOR,
+)> {
     use windows::core::{BOOL, PCWSTR};
     use windows::Win32::Security::Authorization::{
         ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
@@ -233,4 +264,101 @@ fn read_protected(_p: &std::path::Path) -> anyhow::Result<String> {
 #[cfg(not(windows))]
 fn protect_dir(_p: &std::path::Path) -> anyhow::Result<()> {
     anyhow::bail!("mandatory labels are Windows-only")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn allowlist_ignores_comments_and_blanks_and_folds_case() {
+        let got = parse_allowlist("# a comment\n\n  Notepad  \nCALC\n\t# indented comment\n");
+        assert_eq!(got, vec!["notepad", "calc"]);
+    }
+
+    #[test]
+    fn empty_allowlist_permits_nothing() {
+        assert!(parse_allowlist("").is_empty());
+        assert!(parse_allowlist("# only comments\n\n").is_empty());
+    }
+
+    const TICK: u64 = 100;
+
+    /// Engages only after the hold, not on the first tick in the corner - a
+    /// cursor passing through the origin must not halt an agent.
+    #[test]
+    fn estop_requires_the_full_hold() {
+        let mut s = EstopState::default();
+        let mut t = 0;
+        for _ in 0..4 {
+            t += TICK;
+            assert!(!s.step(t, TICK, true), "engaged early at {t}ms");
+        }
+        t += TICK;
+        assert!(s.step(t, TICK, true), "not engaged after 500ms parked");
+    }
+
+    #[test]
+    fn estop_resets_the_hold_when_the_cursor_leaves() {
+        let mut s = EstopState::default();
+        let mut t = 0;
+        for _ in 0..4 {
+            t += TICK;
+            s.step(t, TICK, true);
+        }
+        t += TICK;
+        assert!(!s.step(t, TICK, false));
+        for _ in 0..4 {
+            t += TICK;
+            assert!(!s.step(t, TICK, true), "hold not reset");
+        }
+    }
+
+    /// The latch is the point: if the stop released the moment the cursor moved,
+    /// nudging the mouse would instantly re-arm the agent.
+    #[test]
+    fn estop_stays_latched_through_the_cooldown_then_releases() {
+        let mut s = EstopState::default();
+        let mut t = 0;
+        for _ in 0..5 {
+            t += TICK;
+            s.step(t, TICK, true);
+        }
+        assert!(s.step(t, TICK, true));
+
+        let left_at = t;
+        t += TICK;
+        assert!(s.step(t, TICK, false), "released immediately on leaving");
+
+        t = left_at + COOLDOWN.as_millis() as u64 - TICK;
+        assert!(
+            s.step(t, TICK, false),
+            "released before the cooldown elapsed"
+        );
+
+        t = left_at + COOLDOWN.as_millis() as u64 + TICK;
+        assert!(!s.step(t, TICK, false), "still latched after the cooldown");
+    }
+
+    /// Re-parking during the cooldown must extend it, not let it lapse.
+    #[test]
+    fn estop_cooldown_restarts_if_the_cursor_returns() {
+        let mut s = EstopState::default();
+        let mut t = 0;
+        for _ in 0..5 {
+            t += TICK;
+            s.step(t, TICK, true);
+        }
+        t += TICK;
+        s.step(t, TICK, false);
+
+        t += COOLDOWN.as_millis() as u64 / 2;
+        for _ in 0..5 {
+            t += TICK;
+            s.step(t, TICK, true);
+        }
+        let re_left = t;
+        t = re_left + COOLDOWN.as_millis() as u64 - TICK;
+        assert!(s.step(t, TICK, false), "cooldown did not restart");
+    }
 }

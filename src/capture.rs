@@ -112,11 +112,18 @@ pub fn grab() -> Result<Frame> {
             return Err(anyhow!("GetDIBits returned no scanlines"));
         }
 
+        // Indexed rather than chunks_exact(4): newer clippy denies a constant
+        // chunk size, and the suggested replacements are not stable across the
+        // toolchain range this has to build on.
         let mut rgb = Vec::with_capacity((w as usize) * (h as usize) * 3);
-        for px in bgra.chunks_exact(4) {
-            rgb.extend_from_slice(&[px[2], px[1], px[0]]);
+        for i in (0..bgra.len()).step_by(4) {
+            rgb.extend_from_slice(&[bgra[i + 2], bgra[i + 1], bgra[i]]);
         }
-        Ok(Frame { w: w as u32, h: h as u32, rgb })
+        Ok(Frame {
+            w: w as u32,
+            h: h as u32,
+            rgb,
+        })
     }
 }
 
@@ -196,48 +203,86 @@ pub fn observe_bytes(diff: bool, max_width: u32) -> Result<(Observation, Vec<u8>
     let t0 = std::time::Instant::now();
     let frame = grab()?;
 
-    let (target, changed_fraction, changed_region, note) = if diff {
-        let mut last = LAST.lock().map_err(|_| anyhow!("frame lock poisoned"))?;
-        match last.as_ref().and_then(|p| changed_box(p, &frame, 12)) {
-            None if last.is_some() => {
-                *last = Some(Frame { w: frame.w, h: frame.h, rgb: frame.rgb.clone() });
-                return Ok((Observation {
-                    width: 0, height: 0, scale: 1.0, png_bytes: 0, approx_tokens: 0,
-                    changed_fraction: Some(0.0), changed_region: None,
-                    note: Some("no change since last observation".into()),
-                    elapsed_ms: t0.elapsed().as_secs_f64() * 1000.0,
-                }, Vec::new()));
-            }
-            Some((x, y, w, h, frac, changed_px)) => {
-                *last = Some(Frame { w: frame.w, h: frame.h, rgb: frame.rgb.clone() });
-                // A single hull around scattered changes is mostly unchanged
-                // pixels - a caret in one corner and a clock in the other yields
-                // a near-fullscreen box for a handful of moved pixels. When the
-                // box is that unrepresentative, the coordinates ARE the answer;
-                // sending 259KB to show 200 changed pixels helps nobody.
-                let hull = (w as u64) * (h as u64);
-                if frac < 0.005 && hull > changed_px.saturating_mul(25) {
-                    return Ok((Observation {
-                        width: 0, height: 0, scale: 1.0, png_bytes: 0, approx_tokens: 0,
-                        changed_fraction: Some(frac),
-                        changed_region: Some((x, y, w, h)),
-                        note: Some(format!(
+    let (target, changed_fraction, changed_region, note) =
+        if diff {
+            let mut last = LAST.lock().map_err(|_| anyhow!("frame lock poisoned"))?;
+            match last.as_ref().and_then(|p| changed_box(p, &frame, 12)) {
+                None if last.is_some() => {
+                    *last = Some(Frame {
+                        w: frame.w,
+                        h: frame.h,
+                        rgb: frame.rgb.clone(),
+                    });
+                    return Ok((
+                        Observation {
+                            width: 0,
+                            height: 0,
+                            scale: 1.0,
+                            png_bytes: 0,
+                            approx_tokens: 0,
+                            changed_fraction: Some(0.0),
+                            changed_region: None,
+                            note: Some("no change since last observation".into()),
+                            elapsed_ms: t0.elapsed().as_secs_f64() * 1000.0,
+                        },
+                        Vec::new(),
+                    ));
+                }
+                Some((x, y, w, h, frac, changed_px)) => {
+                    *last = Some(Frame {
+                        w: frame.w,
+                        h: frame.h,
+                        rgb: frame.rgb.clone(),
+                    });
+                    // A single hull around scattered changes is mostly unchanged
+                    // pixels - a caret in one corner and a clock in the other yields
+                    // a near-fullscreen box for a handful of moved pixels. When the
+                    // box is that unrepresentative, the coordinates ARE the answer;
+                    // sending 259KB to show 200 changed pixels helps nobody.
+                    let hull = (w as u64) * (h as u64);
+                    if frac < 0.005 && hull > changed_px.saturating_mul(25) {
+                        return Ok((
+                            Observation {
+                                width: 0,
+                                height: 0,
+                                scale: 1.0,
+                                png_bytes: 0,
+                                approx_tokens: 0,
+                                changed_fraction: Some(frac),
+                                changed_region: Some((x, y, w, h)),
+                                note: Some(format!(
                             "{changed_px} scattered pixels changed ({:.3}%) - image withheld, \
                              the region hull is {}x larger than the change itself",
                             frac * 100.0, hull / changed_px.max(1))),
-                        elapsed_ms: t0.elapsed().as_secs_f64() * 1000.0,
-                    }, Vec::new()));
+                                elapsed_ms: t0.elapsed().as_secs_f64() * 1000.0,
+                            },
+                            Vec::new(),
+                        ));
+                    }
+                    (
+                        crop(&frame, x, y, w, h),
+                        Some(frac),
+                        Some((x, y, w, h)),
+                        None,
+                    )
                 }
-                (crop(&frame, x, y, w, h), Some(frac), Some((x, y, w, h)), None)
+                None => {
+                    *last = Some(Frame {
+                        w: frame.w,
+                        h: frame.h,
+                        rgb: frame.rgb.clone(),
+                    });
+                    (
+                        frame,
+                        None,
+                        None,
+                        Some("first observation - full frame".into()),
+                    )
+                }
             }
-            None => {
-                *last = Some(Frame { w: frame.w, h: frame.h, rgb: frame.rgb.clone() });
-                (frame, None, None, Some("first observation - full frame".into()))
-            }
-        }
-    } else {
-        (frame, None, None, None)
-    };
+        } else {
+            (frame, None, None, None)
+        };
 
     let (png, w, h, scale) = encode_png(&target, max_width)?;
     let obs = Observation {
@@ -261,4 +306,91 @@ pub fn observe(diff: bool, max_width: u32, out_path: Option<&str>) -> Result<Obs
         std::fs::write(p, &png)?;
     }
     Ok(obs)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(w: u32, h: u32, fill: u8) -> Frame {
+        Frame {
+            w,
+            h,
+            rgb: vec![fill; (w as usize) * (h as usize) * 3],
+        }
+    }
+
+    fn set(f: &mut Frame, x: u32, y: u32, v: u8) {
+        let i = ((y as usize) * (f.w as usize) + x as usize) * 3;
+        f.rgb[i] = v;
+        f.rgb[i + 1] = v;
+        f.rgb[i + 2] = v;
+    }
+
+    /// The cheapest and most common answer during a wait loop.
+    #[test]
+    fn identical_frames_report_no_change() {
+        assert!(changed_box(&frame(8, 8, 10), &frame(8, 8, 10), 12).is_none());
+    }
+
+    #[test]
+    fn sub_tolerance_change_is_not_a_change() {
+        let a = frame(8, 8, 10);
+        let mut b = frame(8, 8, 10);
+        set(&mut b, 3, 3, 13); // 3 per channel = 9 total, under tol 12
+        assert!(changed_box(&a, &b, 12).is_none());
+    }
+
+    #[test]
+    fn one_changed_pixel_yields_a_tight_box() {
+        let a = frame(8, 8, 0);
+        let mut b = frame(8, 8, 0);
+        set(&mut b, 5, 2, 255);
+        let (x, y, w, h, _, n) = changed_box(&a, &b, 12).unwrap();
+        assert_eq!((x, y, w, h), (5, 2, 1, 1));
+        assert_eq!(n, 1);
+    }
+
+    /// The case that motivates withholding the image: a handful of scattered
+    /// pixels produce a hull covering nearly the whole frame.
+    #[test]
+    fn scattered_changes_produce_a_hull_far_larger_than_the_change() {
+        let a = frame(100, 100, 0);
+        let mut b = frame(100, 100, 0);
+        set(&mut b, 1, 1, 255);
+        set(&mut b, 98, 98, 255);
+        let (x, y, w, h, frac, n) = changed_box(&a, &b, 12).unwrap();
+        assert_eq!((x, y, w, h), (1, 1, 98, 98));
+        assert_eq!(n, 2);
+        assert!(frac < 0.001, "frac was {frac}");
+        let hull = (w as u64) * (h as u64);
+        assert!(
+            hull > n * 25,
+            "hull {hull} should dwarf {n} changed pixels - this is the withhold trigger"
+        );
+    }
+
+    #[test]
+    fn a_resize_counts_as_a_full_change() {
+        let (x, y, w, h, frac, _) = changed_box(&frame(8, 8, 0), &frame(16, 16, 0), 12).unwrap();
+        assert_eq!((x, y, w, h), (0, 0, 16, 16));
+        assert_eq!(frac, 1.0);
+    }
+
+    #[test]
+    fn crop_extracts_the_requested_region() {
+        let mut f = frame(10, 10, 0);
+        set(&mut f, 4, 4, 200);
+        let c = crop(&f, 4, 4, 2, 2);
+        assert_eq!((c.w, c.h), (2, 2));
+        assert_eq!(c.rgb[0], 200);
+        assert_eq!(c.rgb.len(), 2 * 2 * 3);
+    }
+
+    #[test]
+    fn crop_clamps_at_the_frame_edge() {
+        let f = frame(10, 10, 0);
+        let c = crop(&f, 8, 8, 4, 4);
+        assert!(c.rgb.len() <= 4 * 4 * 3);
+    }
 }

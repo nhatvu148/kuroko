@@ -1,0 +1,49 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Deliberately NOT RUSTFLAGS: -D warnings - that applies to every dependency
+  # too, so an upstream crate emitting a warning would fail our build. Warnings
+  # are denied for this crate's own code via the clippy step below.
+
+jobs:
+  check:
+    # kuroko is Windows-only by construction: UI Automation, SendInput and the
+    # mandatory-label APIs have no counterpart elsewhere, so there is nothing
+    # useful to gain from a Linux job.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: fmt
+        run: cargo fmt --all -- --check
+
+      - name: clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: test
+        # The suite is deliberately free of UI Automation and screen capture:
+        # a GitHub runner has no interactive desktop, so anything touching one
+        # would be skipped here and therefore never actually run.
+        run: cargo test --all
+
+      - name: build release
+        run: cargo build --release
+
+      - name: binary size
+        shell: pwsh
+        run: |
+          $mb = (Get-Item target/release/kuroko.exe).Length / 1MB
+          Write-Host ("kuroko.exe: {0:N2} MB" -f $mb)
+          # Single-binary deployment is a stated goal; a jump here means a
+          # dependency crept in that undercuts the reason this exists.
+          if ($mb -gt 12) { throw "binary grew past 12 MB ($([math]::Round($mb,2)) MB)" }

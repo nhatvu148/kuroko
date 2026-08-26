@@ -133,7 +133,6 @@ enum Cmd {
     ListWindows(oneshot::Sender<Result<Vec<WindowInfo>>>),
     Discover(DiscoverArgs, oneshot::Sender<Result<Discovery>>),
     Act(ActArgs, oneshot::Sender<Result<ActResult>>),
-    Shutdown,
 }
 
 /// Handle to the UIA thread. Cloneable; the thread stops when all handles drop
@@ -180,7 +179,8 @@ impl Engine {
         self.tx
             .send(Cmd::Discover(args, rtx))
             .map_err(|_| anyhow!("UIA thread is gone"))?;
-        rrx.await.map_err(|_| anyhow!("UIA thread dropped the reply"))?
+        rrx.await
+            .map_err(|_| anyhow!("UIA thread dropped the reply"))?
     }
 
     pub async fn act(&self, args: ActArgs) -> Result<ActResult> {
@@ -188,7 +188,8 @@ impl Engine {
         self.tx
             .send(Cmd::Act(args, rtx))
             .map_err(|_| anyhow!("UIA thread is gone"))?;
-        rrx.await.map_err(|_| anyhow!("UIA thread dropped the reply"))?
+        rrx.await
+            .map_err(|_| anyhow!("UIA thread dropped the reply"))?
     }
 
     pub async fn list_windows(&self) -> Result<Vec<WindowInfo>> {
@@ -196,13 +197,14 @@ impl Engine {
         self.tx
             .send(Cmd::ListWindows(rtx))
             .map_err(|_| anyhow!("UIA thread is gone"))?;
-        rrx.await.map_err(|_| anyhow!("UIA thread dropped the reply"))?
+        rrx.await
+            .map_err(|_| anyhow!("UIA thread dropped the reply"))?
     }
 }
 
-// Engine is Clone, so it deliberately has no Drop impl. Sending Cmd::Shutdown
-// from one would be a per-clone action with a process-wide effect: the HTTP
-// transport builds a Kuroko (and so an Engine clone) per session, and the first
-// session to end would take down the COM thread every other session shares.
-// The thread already stops on its own - `rx.recv()` returns Err once the last
-// Sender is dropped, which is exactly the "no owners left" condition wanted.
+// Engine is Clone and deliberately has no Drop impl. Signalling shutdown from
+// one would be a per-clone action with a process-wide effect: the HTTP transport
+// builds a Kuroko (and so an Engine clone) per session, so the first session to
+// end would take down the COM thread every other session shares. The thread
+// already stops on its own - `rx.recv()` returns Err once the last Sender is
+// dropped, which is exactly the "no owners left" condition wanted.
