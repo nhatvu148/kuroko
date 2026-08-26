@@ -7,7 +7,9 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
+  # Deliberately NOT RUSTFLAGS: -D warnings - that applies to every dependency
+  # too, so an upstream crate emitting a warning would fail our build. Warnings
+  # are denied for this crate's own code via the clippy step below.
 
 jobs:
   check:
