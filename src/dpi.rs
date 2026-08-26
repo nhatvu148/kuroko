@@ -1,6 +1,6 @@
 //! Display scaling.
 //!
-//! Everything kuroko returns is a coordinate, so the process must opt in to
+//! Everything wincrust returns is a coordinate, so the process must opt in to
 //! per-monitor DPI awareness before it reads one. Without it Windows reports a
 //! virtualised coordinate space to the process: on a 150% display a control at
 //! physical x=1500 is reported at x=1000, capture comes back scaled, and the

@@ -11,7 +11,7 @@ use std::time::Instant;
 
 #[derive(Parser)]
 #[command(
-    name = "kuroko",
+    name = "wincrust",
     about = "Elevated Windows desktop automation over MCP"
 )]
 struct Cli {
@@ -39,7 +39,7 @@ enum Command {
         port: u16,
         /// Bearer token required on every HTTP request. Refuses to bind a
         /// non-loopback address without one.
-        #[arg(long, env = "KUROKO_AUTH_KEY")]
+        #[arg(long, env = "WINCRUST_AUTH_KEY")]
         auth_key: Option<String>,
         /// Comma-separated client IPs permitted to connect.
         #[arg(long)]
@@ -107,7 +107,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "kuroko=info".into()),
+                .unwrap_or_else(|_| "wincrust=info".into()),
         )
         .with_writer(std::io::stderr)
         .init();
@@ -115,7 +115,7 @@ async fn main() -> Result<()> {
     // Before any UIA query, any capture, any window handle. A process that has
     // not declared awareness is lied to by Windows: bounding rectangles and
     // screen captures come back in a virtualised coordinate space that does not
-    // match where anything actually is. Every number kuroko returns is a
+    // match where anything actually is. Every number wincrust returns is a
     // coordinate, so this has to happen first.
     dpi::declare_awareness();
 

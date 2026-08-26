@@ -16,7 +16,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 #[derive(Clone)]
-pub struct Kuroko {
+pub struct Wincrust {
     engine: uia::Engine,
     allowlist: std::sync::Arc<Vec<String>>,
 }
@@ -59,7 +59,7 @@ pub struct LaunchParams {
 }
 
 #[tool_router]
-impl Kuroko {
+impl Wincrust {
     /// The allowlist is loaded once by the caller and shared. Loading it here
     /// would re-read the file and repeat a security-relevant syscall
     /// (`SetSecurityInfo`) on every new HTTP session.
@@ -210,7 +210,7 @@ impl Kuroko {
             return Err(McpError::invalid_params(
                 format!(
                     "'{}' is not in the launch allowlist ({} entries). Add it to \
-                     %LOCALAPPDATA%\\kuroko\\launch-allowlist.txt on the host.",
+                     %LOCALAPPDATA%\\wincrust\\launch-allowlist.txt on the host.",
                     p.name,
                     self.allowlist.len()
                 ),
@@ -226,12 +226,12 @@ impl Kuroko {
 }
 
 #[tool_handler]
-impl ServerHandler for Kuroko {
+impl ServerHandler for Wincrust {
     fn get_info(&self) -> ServerInfo {
         // ServerInfo and Implementation are #[non_exhaustive]: build from
         // Default and assign, rather than a struct literal.
         let mut me = Implementation::default();
-        me.name = "kuroko".into();
+        me.name = "wincrust".into();
         me.version = env!("CARGO_PKG_VERSION").into();
 
         let mut info = ServerInfo::default();
@@ -271,7 +271,7 @@ pub async fn serve(
         "stdio" => {
             use rmcp::ServiceExt;
             let allowlist = std::sync::Arc::new(guard::load_allowlist());
-            let service = Kuroko::new(engine, allowlist)
+            let service = Wincrust::new(engine, allowlist)
                 .serve(rmcp::transport::stdio())
                 .await?;
             service.waiting().await?;
@@ -313,7 +313,7 @@ async fn serve_http(
 
     let allowlist = std::sync::Arc::new(guard::load_allowlist());
     let svc = StreamableHttpService::new(
-        move || Ok(Kuroko::new(engine.clone(), allowlist.clone())),
+        move || Ok(Wincrust::new(engine.clone(), allowlist.clone())),
         LocalSessionManager::default().into(),
         Default::default(),
     );
@@ -370,7 +370,7 @@ async fn serve_http(
         .ok_or_else(|| anyhow::anyhow!("{host}:{port} resolved to no addresses"))?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(
-        "kuroko listening on http://{addr}/mcp  (auth: {}, ip allowlist entries: {})",
+        "wincrust listening on http://{addr}/mcp  (auth: {}, ip allowlist entries: {})",
         if auth_key.is_some() { "on" } else { "OFF" },
         allow_count
     );
