@@ -96,7 +96,15 @@ pub fn find_text(query: Option<&str>, max_matches: usize) -> Result<TextResult> 
         // gives a far tighter click target than the whole line.
         if needle.is_empty() || (multiword && line_text.to_lowercase().contains(&needle)) {
             let words = line.Words()?;
-            if let (Ok(first), Ok(last)) = (words.GetAt(0), words.GetAt(words.Size()? - 1)) {
+            // Checked before the subtraction, not inside the tuple below: both
+            // operands of a tuple literal are evaluated before any pattern can
+            // short-circuit, so `Size() - 1` on an empty line would underflow
+            // (panic in debug, wrap in release) regardless of the match arms.
+            let n = words.Size()?;
+            if n == 0 {
+                continue;
+            }
+            if let (Ok(first), Ok(last)) = (words.GetAt(0), words.GetAt(n - 1)) {
                 let (a, b) = (first.BoundingRect()?, last.BoundingRect()?);
                 let x = a.X as i32;
                 let y = a.Y.min(b.Y) as i32;

@@ -212,7 +212,7 @@ impl Wincrust {
         &self,
         Parameters(p): Parameters<FindTextParams>,
     ) -> Result<Json<ocr::TextResult>, McpError> {
-        let q = p.query.clone();
+        let q = p.query;
         let max = p.max_matches.unwrap_or(50);
         tokio::task::spawn_blocking(move || ocr::find_text(q.as_deref(), max))
             .await
