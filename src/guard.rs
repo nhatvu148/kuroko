@@ -74,7 +74,7 @@ pub fn spawn_watcher() {
     use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
     std::thread::Builder::new()
-        .name("kuroko-estop".into())
+        .name("wincrust-estop".into())
         .spawn(|| {
             let tick = Duration::from_millis(100);
             let tick_ms = tick.as_millis() as u64;
@@ -155,7 +155,7 @@ fn allowlist_path() -> std::path::PathBuf {
     std::env::var("LOCALAPPDATA")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|_| std::env::temp_dir())
-        .join("kuroko")
+        .join("wincrust")
         .join("launch-allowlist.txt")
 }
 

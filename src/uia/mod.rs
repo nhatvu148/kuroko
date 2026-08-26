@@ -156,14 +156,14 @@ impl Engine {
         let (ready_tx, ready_rx) = mpsc::channel::<Result<()>>();
 
         std::thread::Builder::new()
-            .name("kuroko-uia".into())
+            .name("wincrust-uia".into())
             .spawn(move || {
                 #[cfg(windows)]
                 win::run(rx, ready_tx, cfg);
                 #[cfg(not(windows))]
                 {
                     let _ = (rx, cfg);
-                    let _ = ready_tx.send(Err(anyhow!("kuroko requires Windows")));
+                    let _ = ready_tx.send(Err(anyhow!("wincrust requires Windows")));
                 }
             })?;
 
@@ -204,7 +204,7 @@ impl Engine {
 
 // Engine is Clone and deliberately has no Drop impl. Signalling shutdown from
 // one would be a per-clone action with a process-wide effect: the HTTP transport
-// builds a Kuroko (and so an Engine clone) per session, so the first session to
+// builds a Wincrust (and so an Engine clone) per session, so the first session to
 // end would take down the COM thread every other session shares. The thread
 // already stops on its own - `rx.recv()` returns Err once the last Sender is
 // dropped, which is exactly the "no owners left" condition wanted.

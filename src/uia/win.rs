@@ -1,5 +1,5 @@
 //! Windows-only half of the UIA engine. Everything in here runs on the single
-//! `kuroko-uia` thread, so the COM pointers never escape their apartment.
+//! `wincrust-uia` thread, so the COM pointers never escape their apartment.
 
 use super::{
     ActArgs, ActResult, Bounds, Cmd, DiscoverArgs, Discovery, EngineConfig, Entity, Filter,

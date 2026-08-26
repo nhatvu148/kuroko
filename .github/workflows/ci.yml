@@ -13,7 +13,7 @@ env:
 
 jobs:
   check:
-    # kuroko is Windows-only by construction: UI Automation, SendInput and the
+    # wincrust is Windows-only by construction: UI Automation, SendInput and the
     # mandatory-label APIs have no counterpart elsewhere, so there is nothing
     # useful to gain from a Linux job.
     runs-on: windows-latest
@@ -42,8 +42,8 @@ jobs:
       - name: binary size
         shell: pwsh
         run: |
-          $mb = (Get-Item target/release/kuroko.exe).Length / 1MB
-          Write-Host ("kuroko.exe: {0:N2} MB" -f $mb)
+          $mb = (Get-Item target/release/wincrust.exe).Length / 1MB
+          Write-Host ("wincrust.exe: {0:N2} MB" -f $mb)
           # Single-binary deployment is a stated goal; a jump here means a
           # dependency crept in that undercuts the reason this exists.
           if ($mb -gt 12) { throw "binary grew past 12 MB ($([math]::Round($mb,2)) MB)" }

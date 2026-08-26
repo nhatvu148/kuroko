@@ -1,19 +1,20 @@
-# kuroko
+# wincrust
 
 Windows desktop automation over MCP. Pure Rust, single binary, ~6 MB.
 
-Named for 黒子 — the kabuki stagehand who moves things unseen.
+**win** for the platform, **crust** for the language — it contains *rust*, and
+crustacean is where *Rustacean* comes from.
 
 ## Why
 
 The obvious alternative, [Windows-MCP](https://github.com/CursorTouch/Windows-MCP), works well and is
-worth using. kuroko exists for one reason: **integrity level**.
+worth using. wincrust exists for one reason: **integrity level**.
 
 To reach UAC-adjacent dialogs, an automation server must run at High integrity. Windows-MCP at
 High integrity means **95 Python packages and 105 native modules** loaded into a process holding an
 admin token on a network socket, with tools including `PowerShell` and `Registry`.
 
-kuroko has 16 direct dependencies and 168 transitive crates. That is not a small number, and
+wincrust has 16 direct dependencies and 168 transitive crates. That is not a small number, and
 it would be dishonest to pretend otherwise — the difference is in kind, not count: Rust dependencies
 are resolved at compile time and dead-code-eliminated, with no interpreter, no dynamic import and no
 `eval` in the running process. And the tool surface is five, none of which is a shell.
@@ -60,7 +61,7 @@ restart does rotate it; scopes live 60 seconds, which makes that a non-event.
 
 Same window, same moment, against Windows-MCP:
 
-| | Windows-MCP | kuroko |
+| | Windows-MCP | wincrust |
 |---|---|---|
 | VS Code, 175 entities | 449 ms | **36 ms** |
 | Task Manager, 174 entities | 5,477 ms | **665 ms** |
@@ -90,9 +91,9 @@ x86_64, a single 1920x1080 display at origin (0,0), en-US.
 | emergency stop, allowlist fail-closed, HTTP auth | verified end to end |
 | lease signing, diff heuristics, stop state machine | unit tested (21 tests) |
 | **display scaling** | verified at **100%, 125%, 150% and 175%** — see below |
-| **multiple monitors** | **NOT verified** — no second display available. Negative-origin handling is unit tested only |
-| Windows 10, Server, ARM64 | not tested |
-| non-English locale | not tested. `App`-by-name matches localised UIA `Name` values |
+| **multiple monitors** | **NOT verified** — no second display available. Negative-origin handling is unit tested only ([#5](https://github.com/nhatvu148/wincrust/issues/5)) |
+| Windows 10, Server, ARM64 | not tested ([#6](https://github.com/nhatvu148/wincrust/issues/6)) |
+| non-English locale | not tested, and the most likely of these to actually break: `App`-by-name matches **localised** UIA `Name` values ([#6](https://github.com/nhatvu148/wincrust/issues/6)) |
 
 ### Display scaling
 
@@ -110,7 +111,7 @@ would report coordinates shrinking toward the origin. And 175% is the case that
 could have failed: 1920 / 1.75 = 1097.14 does not divide cleanly, so rounding
 artifacts would surface there.
 
-`kuroko displays` prints the process's DPI awareness and each monitor's real
+`wincrust displays` prints the process's DPI awareness and each monitor's real
 scale factor. If it reports `scale: 1.0` everywhere you have tested, you have not
 tested scaling — and a DPI-unaware build looks entirely healthy at 100%.
 

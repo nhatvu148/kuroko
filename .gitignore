@@ -1,3 +1,13 @@
 /target
 **/*.rs.bk
 *.pdb
+
+# Scratch output from manual `observe --out` / capture runs, which land in the
+# repo root. These are screenshots of a real desktop and must never reach git or
+# a crate tarball.
+#
+# Root-anchored on purpose: a blanket *.png would also swallow a docs diagram or
+# any asset added under a subdirectory later, silently. Scratch files appear
+# here, so this is where the rule belongs.
+/*.png
+/*.txt
