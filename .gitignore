@@ -1,3 +1,9 @@
 /target
 **/*.rs.bk
 *.pdb
+
+# Scratch output from manual `observe --out` / capture runs. These are
+# screenshots of a real desktop - they must never reach git or a crate tarball.
+*.png
+*.txt
+!requirements*.txt
