@@ -85,34 +85,40 @@ pub fn spawn_watcher() {}
 
 /// Apps `launch` is permitted to start.
 ///
-/// Two failure-closed properties matter here. An absent file permits nothing,
-/// and a file we cannot protect permits nothing either: this process holds an
-/// admin token, so an allowlist a Medium-integrity process could append to is a
-/// direct privilege-escalation path, not a config inconvenience.
+/// Three failure-closed properties. An absent file permits nothing; a file we
+/// cannot label permits nothing; and the label is applied to the *same open
+/// file object* the contents are then read from.
+///
+/// That last one is not pedantry. Labelling by path and then re-opening by path
+/// leaves a window in which a Medium-integrity process deletes the file and
+/// drops in a replacement - the label protects a file that is no longer there,
+/// and the unlabelled replacement is trusted anyway. Holding one handle across
+/// both operations closes it.
 pub fn load_allowlist() -> Vec<String> {
     let path = allowlist_path();
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
+        // Best effort: a labelled directory stops a lower-integrity process
+        // replacing the file wholesale rather than editing it.
+        let _ = protect_dir(dir);
     }
     if !path.exists() {
         return Vec::new();
     }
-    if let Err(e) = protect_high_integrity(&path) {
-        tracing::error!(
-            "refusing to load the launch allowlist: cannot apply a High mandatory label to {} ({e}). \
-             `launch` will permit nothing.",
-            path.display()
-        );
-        return Vec::new();
+    match read_protected(&path) {
+        Ok(s) => s
+            .lines()
+            .map(|l| l.trim().to_lowercase())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .collect(),
+        Err(e) => {
+            tracing::error!(
+                "refusing to load the launch allowlist at {} ({e}). `launch` will permit nothing.",
+                path.display()
+            );
+            Vec::new()
+        }
     }
-    std::fs::read_to_string(&path)
-        .map(|s| {
-            s.lines()
-                .map(|l| l.trim().to_lowercase())
-                .filter(|l| !l.is_empty() && !l.starts_with('#'))
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 fn allowlist_path() -> std::path::PathBuf {
@@ -123,38 +129,86 @@ fn allowlist_path() -> std::path::PathBuf {
         .join("launch-allowlist.txt")
 }
 
-/// Stamp a "no write up" mandatory label at High integrity on the file, so a
-/// process below High cannot modify it even though it runs as the same user.
-/// Default ACLs do not do this - integrity level and user identity are separate
-/// axes, and only the mandatory label constrains the former.
+/// SDDL for "no write up" at High integrity, as a SACL.
 #[cfg(windows)]
-fn protect_high_integrity(path: &std::path::Path) -> anyhow::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
+unsafe fn high_integrity_sacl(
+) -> anyhow::Result<(*mut windows::Win32::Security::ACL, windows::Win32::Security::PSECURITY_DESCRIPTOR)>
+{
     use windows::core::{BOOL, PCWSTR};
     use windows::Win32::Security::Authorization::{
-        ConvertStringSecurityDescriptorToSecurityDescriptorW, SetNamedSecurityInfoW,
-        SDDL_REVISION_1, SE_FILE_OBJECT,
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
     };
-    use windows::Win32::Security::{
-        GetSecurityDescriptorSacl, ACL, LABEL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
-    };
+    use windows::Win32::Security::{GetSecurityDescriptorSacl, ACL, PSECURITY_DESCRIPTOR};
+
+    // ML = mandatory label, NW = no write up, HI = high integrity.
+    let sddl: Vec<u16> = "S:(ML;;NW;;;HI)\0".encode_utf16().collect();
+    let mut psd = PSECURITY_DESCRIPTOR::default();
+    ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        PCWSTR(sddl.as_ptr()),
+        SDDL_REVISION_1,
+        &mut psd,
+        None,
+    )?;
+    let mut sacl: *mut ACL = std::ptr::null_mut();
+    let (mut present, mut defaulted) = (BOOL(0), BOOL(0));
+    GetSecurityDescriptorSacl(psd, &mut present, &mut sacl, &mut defaulted)?;
+    Ok((sacl, psd))
+}
+
+/// Open once, stamp the label on that handle, read from that same handle.
+#[cfg(windows)]
+fn read_protected(path: &std::path::Path) -> anyhow::Result<String> {
+    use std::io::Read;
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::Security::Authorization::{SetSecurityInfo, SE_FILE_OBJECT};
+    use windows::Win32::Security::LABEL_SECURITY_INFORMATION;
+
+    // WRITE_OWNER is what a mandatory label actually needs, and neither
+    // GENERIC_READ nor GENERIC_WRITE implies it - opening read+write yields
+    // ACCESS_DENIED from SetSecurityInfo. Ask for it explicitly.
+    const FILE_GENERIC_READ: u32 = 0x0012_0089;
+    const WRITE_OWNER: u32 = 0x0008_0000;
+    let mut f = std::fs::OpenOptions::new()
+        .read(true)
+        .access_mode(FILE_GENERIC_READ | WRITE_OWNER)
+        .open(path)?;
+    unsafe {
+        let (sacl, _psd) = high_integrity_sacl()?;
+        let rc = SetSecurityInfo(
+            HANDLE(f.as_raw_handle()),
+            SE_FILE_OBJECT,
+            LABEL_SECURITY_INFORMATION,
+            None,
+            None,
+            None,
+            Some(sacl),
+        );
+        if rc.is_err() {
+            anyhow::bail!(
+                "cannot apply a High mandatory label ({rc:?}). A process cannot set a label \
+                 above its own integrity level - if this server is not running elevated, that \
+                 is the cause, and `launch` is correctly refusing to trust an allowlist it \
+                 cannot protect."
+            );
+        }
+    }
+    let mut s = String::new();
+    f.read_to_string(&mut s)?;
+    Ok(s)
+}
+
+#[cfg(windows)]
+fn protect_dir(dir: &std::path::Path) -> anyhow::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::PCWSTR;
+    use windows::Win32::Security::Authorization::{SetNamedSecurityInfoW, SE_FILE_OBJECT};
+    use windows::Win32::Security::LABEL_SECURITY_INFORMATION;
 
     unsafe {
-        // ML = mandatory label, NW = no write up, HI = high integrity.
-        let sddl: Vec<u16> = "S:(ML;;NW;;;HI)\0".encode_utf16().collect();
-        let mut psd = PSECURITY_DESCRIPTOR::default();
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(
-            PCWSTR(sddl.as_ptr()),
-            SDDL_REVISION_1,
-            &mut psd,
-            None,
-        )?;
-
-        let mut sacl: *mut ACL = std::ptr::null_mut();
-        let (mut present, mut defaulted) = (BOOL(0), BOOL(0));
-        GetSecurityDescriptorSacl(psd, &mut present, &mut sacl, &mut defaulted)?;
-
-        let mut wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let (sacl, _psd) = high_integrity_sacl()?;
+        let mut wide: Vec<u16> = dir.as_os_str().encode_wide().chain(Some(0)).collect();
         let rc = SetNamedSecurityInfoW(
             PCWSTR(wide.as_mut_ptr()),
             SE_FILE_OBJECT,
@@ -165,13 +219,18 @@ fn protect_high_integrity(path: &std::path::Path) -> anyhow::Result<()> {
             Some(sacl),
         );
         if rc.is_err() {
-            anyhow::bail!("SetNamedSecurityInfoW failed: {rc:?}");
+            anyhow::bail!("SetNamedSecurityInfoW on {}: {rc:?}", dir.display());
         }
     }
     Ok(())
 }
 
 #[cfg(not(windows))]
-fn protect_high_integrity(_p: &std::path::Path) -> anyhow::Result<()> {
+fn read_protected(_p: &std::path::Path) -> anyhow::Result<String> {
+    anyhow::bail!("mandatory labels are Windows-only")
+}
+
+#[cfg(not(windows))]
+fn protect_dir(_p: &std::path::Path) -> anyhow::Result<()> {
     anyhow::bail!("mandatory labels are Windows-only")
 }

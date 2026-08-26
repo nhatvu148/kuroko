@@ -81,7 +81,10 @@ fn is_true(b: &bool) -> bool {
 pub enum Filter {
     /// Things you can actually click, type into, toggle, expand or select.
     Actionable,
-    /// Everything the tree filter surfaced, containers included.
+    /// Everything the tree filter surfaced that exposes at least one control
+    /// pattern, containers and unnamed elements included. Elements with no
+    /// pattern at all are never returned: there is nothing to act on and no
+    /// action list to hand back.
     All,
 }
 
@@ -197,8 +200,9 @@ impl Engine {
     }
 }
 
-impl Drop for Engine {
-    fn drop(&mut self) {
-        let _ = self.tx.send(Cmd::Shutdown);
-    }
-}
+// Engine is Clone, so it deliberately has no Drop impl. Sending Cmd::Shutdown
+// from one would be a per-clone action with a process-wide effect: the HTTP
+// transport builds a Kuroko (and so an Engine clone) per session, and the first
+// session to end would take down the COM thread every other session shares.
+// The thread already stops on its own - `rx.recv()` returns Err once the last
+// Sender is dropped, which is exactly the "no owners left" condition wanted.

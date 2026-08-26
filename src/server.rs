@@ -60,11 +60,11 @@ pub struct LaunchParams {
 
 #[tool_router]
 impl Kuroko {
-    pub fn new(engine: uia::Engine) -> Self {
-        Self {
-            engine,
-            allowlist: std::sync::Arc::new(guard::load_allowlist()),
-        }
+    /// The allowlist is loaded once by the caller and shared. Loading it here
+    /// would re-read the file and repeat a security-relevant syscall
+    /// (`SetSecurityInfo`) on every new HTTP session.
+    pub fn new(engine: uia::Engine, allowlist: std::sync::Arc<Vec<String>>) -> Self {
+        Self { engine, allowlist }
     }
 
     #[tool(name = "windows", description = "List top-level windows with their handles, pids and bounds.")]
@@ -250,7 +250,10 @@ pub async fn serve(
     match transport {
         "stdio" => {
             use rmcp::ServiceExt;
-            let service = Kuroko::new(engine).serve(rmcp::transport::stdio()).await?;
+            let allowlist = std::sync::Arc::new(guard::load_allowlist());
+            let service = Kuroko::new(engine, allowlist)
+                .serve(rmcp::transport::stdio())
+                .await?;
             service.waiting().await?;
             Ok(())
         }
@@ -288,8 +291,9 @@ async fn serve_http(
     use rmcp::transport::streamable_http_server::StreamableHttpService;
     use std::net::SocketAddr;
 
+    let allowlist = std::sync::Arc::new(guard::load_allowlist());
     let svc = StreamableHttpService::new(
-        move || Ok(Kuroko::new(engine.clone())),
+        move || Ok(Kuroko::new(engine.clone(), allowlist.clone())),
         LocalSessionManager::default().into(),
         Default::default(),
     );

@@ -348,10 +348,9 @@ unsafe fn to_entity(
 
 
     // An element with neither a name nor an automation id cannot be referred to
-    // by a caller and is almost always layout scaffolding. Groups and images
-    // that are merely *containers* of real controls fall out here, which is
-    // where most of the payload bloat lived.
-    if name.trim().is_empty() && automation_id.is_empty() {
+    // by a caller and is almost always layout scaffolding - most of the payload
+    // bloat lived here. Only dropped in Actionable mode: `all` means all.
+    if args.filter == Filter::Actionable && name.trim().is_empty() && automation_id.is_empty() {
         return Ok(None);
     }
 
