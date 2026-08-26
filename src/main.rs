@@ -108,7 +108,7 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
     let t0 = Instant::now();
-    let lease_key = lease::load_or_create_key()?;
+    let lease_key = lease::new_key()?;
     let engine = uia::Engine::spawn(uia::EngineConfig { lease_key })?;
     let startup = t0.elapsed();
     tracing::info!("UIA engine ready in {:.1}ms", startup.as_secs_f64() * 1000.0);
@@ -119,6 +119,7 @@ async fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&w)?);
         }
         Command::Bench { runs } => {
+            anyhow::ensure!(runs >= 1, "--runs must be at least 1");
             let mut ms = Vec::new();
             let mut count = 0usize;
             for _ in 0..runs {
@@ -185,6 +186,7 @@ async fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&r)?);
         }
         Command::Discover { hwnd, max_depth, max_elements, ttl, filter, verbose, summary, runs } => {
+            anyhow::ensure!(runs >= 1, "--runs must be at least 1");
             let mut ms = Vec::new();
             let mut last = None;
             for _ in 0..runs {

@@ -21,7 +21,6 @@ use base64::{engine::general_purpose::URL_SAFE_NO_PAD as B64, Engine};
 use hmac::{Hmac, KeyInit, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
-use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 type HmacSha256 = Hmac<Sha256>;
@@ -89,27 +88,16 @@ pub fn now() -> u64 {
         .unwrap_or(0)
 }
 
-fn key_path() -> PathBuf {
-    let base = std::env::var("LOCALAPPDATA")
-        .map(PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir());
-    base.join("kuroko").join("lease.key")
-}
-
-/// Persisted so leases survive a restart - the generation stamp and expiry,
-/// not process lifetime, are what decide whether a lease is still good.
-pub fn load_or_create_key() -> Result<Vec<u8>> {
-    let path = key_path();
-    if let Ok(k) = std::fs::read(&path) {
-        if k.len() >= 32 {
-            return Ok(k);
-        }
-    }
+/// Generated fresh per process and never written to disk.
+///
+/// It was previously persisted so leases survived a restart. That traded a real
+/// security property for a negligible convenience: the file sat under
+/// `%LOCALAPPDATA%` with default ACLs, readable by any process running as this
+/// user at *any* integrity level, so a Medium-integrity process could mint
+/// scopes for this High-integrity server. Scopes live 60 seconds; losing them on
+/// restart costs nothing worth that.
+pub fn new_key() -> Result<Vec<u8>> {
     let mut k = [0u8; 32];
     getrandom::fill(&mut k).map_err(|e| anyhow!("getrandom failed: {e}"))?;
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    std::fs::write(&path, k)?;
     Ok(k.to_vec())
 }

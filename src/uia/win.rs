@@ -331,7 +331,7 @@ unsafe fn to_entity(
     if args.filter == Filter::Actionable {
         // "Can be scrolled into view" is not something a caller ever asks for
         // on its own - it is a property of nearly every list row.
-        let only_scroll = actions.is_empty();
+        let only_scroll = actions.len() == 1 && actions[0] == "scroll_into_view";
         // Groups and panes with no invoke/value pattern are layout, not targets.
         let bare_container = matches!(control_type.as_str(), "group" | "pane" | "custom")
             && !actions.iter().any(|a| a == "click" || a == "type");

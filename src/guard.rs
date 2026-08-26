@@ -83,16 +83,29 @@ pub fn spawn_watcher() {
 #[cfg(not(windows))]
 pub fn spawn_watcher() {}
 
-/// Apps `launch` is permitted to start. Absent file means nothing is allowed -
-/// failing closed is the only sane default for a tool that spawns processes
-/// from a High-integrity, network-reachable server.
+/// Apps `launch` is permitted to start.
+///
+/// Two failure-closed properties matter here. An absent file permits nothing,
+/// and a file we cannot protect permits nothing either: this process holds an
+/// admin token, so an allowlist a Medium-integrity process could append to is a
+/// direct privilege-escalation path, not a config inconvenience.
 pub fn load_allowlist() -> Vec<String> {
-    let path = std::env::var("LOCALAPPDATA")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| std::env::temp_dir())
-        .join("kuroko")
-        .join("launch-allowlist.txt");
-    std::fs::read_to_string(path)
+    let path = allowlist_path();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if !path.exists() {
+        return Vec::new();
+    }
+    if let Err(e) = protect_high_integrity(&path) {
+        tracing::error!(
+            "refusing to load the launch allowlist: cannot apply a High mandatory label to {} ({e}). \
+             `launch` will permit nothing.",
+            path.display()
+        );
+        return Vec::new();
+    }
+    std::fs::read_to_string(&path)
         .map(|s| {
             s.lines()
                 .map(|l| l.trim().to_lowercase())
@@ -100,4 +113,65 @@ pub fn load_allowlist() -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+fn allowlist_path() -> std::path::PathBuf {
+    std::env::var("LOCALAPPDATA")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir())
+        .join("kuroko")
+        .join("launch-allowlist.txt")
+}
+
+/// Stamp a "no write up" mandatory label at High integrity on the file, so a
+/// process below High cannot modify it even though it runs as the same user.
+/// Default ACLs do not do this - integrity level and user identity are separate
+/// axes, and only the mandatory label constrains the former.
+#[cfg(windows)]
+fn protect_high_integrity(path: &std::path::Path) -> anyhow::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::{BOOL, PCWSTR};
+    use windows::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SetNamedSecurityInfoW,
+        SDDL_REVISION_1, SE_FILE_OBJECT,
+    };
+    use windows::Win32::Security::{
+        GetSecurityDescriptorSacl, ACL, LABEL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+    };
+
+    unsafe {
+        // ML = mandatory label, NW = no write up, HI = high integrity.
+        let sddl: Vec<u16> = "S:(ML;;NW;;;HI)\0".encode_utf16().collect();
+        let mut psd = PSECURITY_DESCRIPTOR::default();
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            PCWSTR(sddl.as_ptr()),
+            SDDL_REVISION_1,
+            &mut psd,
+            None,
+        )?;
+
+        let mut sacl: *mut ACL = std::ptr::null_mut();
+        let (mut present, mut defaulted) = (BOOL(0), BOOL(0));
+        GetSecurityDescriptorSacl(psd, &mut present, &mut sacl, &mut defaulted)?;
+
+        let mut wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+        let rc = SetNamedSecurityInfoW(
+            PCWSTR(wide.as_mut_ptr()),
+            SE_FILE_OBJECT,
+            LABEL_SECURITY_INFORMATION,
+            None,
+            None,
+            None,
+            Some(sacl),
+        );
+        if rc.is_err() {
+            anyhow::bail!("SetNamedSecurityInfoW failed: {rc:?}");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn protect_high_integrity(_p: &std::path::Path) -> anyhow::Result<()> {
+    anyhow::bail!("mandatory labels are Windows-only")
 }

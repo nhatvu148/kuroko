@@ -255,7 +255,12 @@ pub async fn serve(
             Ok(())
         }
         "http" => {
-            let loopback = host == "127.0.0.1" || host == "localhost" || host == "::1";
+            // Decided on the resolved address, not the spelling: "localhost"
+            // can resolve to a non-loopback address on a badly configured host.
+            let loopback = tokio::net::lookup_host((host, port))
+                .await
+                .map(|mut a| a.all(|s| s.ip().is_loopback()))
+                .unwrap_or(false);
             // Refusing rather than warning: this process holds an admin token,
             // and an unauthenticated bind is not a mistake worth allowing a flag
             // to override.
@@ -329,7 +334,14 @@ async fn serve_http(
         }),
     );
 
-    let addr: SocketAddr = format!("{host}:{port}").parse()?;
+    // `SocketAddr::from_str` neither resolves names nor tolerates an unbracketed
+    // IPv6 literal, so the loopback check above accepted "localhost" and "::1"
+    // as valid while binding them failed. Resolve instead of parsing.
+    let addr: SocketAddr = tokio::net::lookup_host((host, port))
+        .await
+        .map_err(|e| anyhow::anyhow!("cannot resolve {host}:{port}: {e}"))?
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("{host}:{port} resolved to no addresses"))?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!(
         "kuroko listening on http://{addr}/mcp  (auth: {}, ip allowlist entries: {})",
