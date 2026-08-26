@@ -160,7 +160,12 @@ impl Kuroko {
                 })
                 .await
                 .ok();
-            let v = serde_json::json!({ "windows": wins, "focused": focused });
+            let v = serde_json::json!({
+                "process_dpi_awareness": crate::dpi::awareness(),
+                "displays": crate::dpi::displays().unwrap_or_default(),
+                "windows": wins,
+                "focused": focused,
+            });
             return Ok(CallToolResult::success(vec![ContentBlock::text(
                 v.to_string(),
             )]));

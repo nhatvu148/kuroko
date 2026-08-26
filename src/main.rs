@@ -1,4 +1,5 @@
 mod capture;
+mod dpi;
 mod guard;
 mod lease;
 mod server;
@@ -44,6 +45,8 @@ enum Command {
         #[arg(long)]
         ip_allowlist: Option<String>,
     },
+    /// List displays with their bounds and real scale factors.
+    Displays,
     /// Capture the screen: full image, or only what changed since last time.
     Observe {
         /// text | image | diff
@@ -109,6 +112,13 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
 
+    // Before any UIA query, any capture, any window handle. A process that has
+    // not declared awareness is lied to by Windows: bounding rectangles and
+    // screen captures come back in a virtualised coordinate space that does not
+    // match where anything actually is. Every number kuroko returns is a
+    // coordinate, so this has to happen first.
+    dpi::declare_awareness();
+
     let cli = Cli::parse();
     let t0 = Instant::now();
     let lease_key = lease::new_key()?;
@@ -160,6 +170,15 @@ async fn main() -> Result<()> {
                 .filter(|s| !s.is_empty())
                 .collect();
             server::serve(engine, &transport, &host, port, auth_key, allow).await?;
+        }
+        Command::Displays => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "process_dpi_awareness": dpi::awareness(),
+                    "displays": dpi::displays()?,
+                }))?
+            );
         }
         Command::Observe {
             detail,

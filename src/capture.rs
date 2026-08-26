@@ -25,6 +25,10 @@ use windows::Win32::UI::WindowsAndMessaging::{
 pub struct Frame {
     pub w: u32,
     pub h: u32,
+    /// Screen coordinate of this frame's top-left. NOT always (0,0): a monitor
+    /// placed left of or above the primary gives the virtual screen a negative
+    /// origin, and a region reported without it points at the wrong place.
+    pub origin: (i32, i32),
     /// Row-major RGB, top-down.
     pub rgb: Vec<u8>,
 }
@@ -41,9 +45,11 @@ pub struct Observation {
     /// diff mode only: fraction of pixels that changed since the last capture.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changed_fraction: Option<f64>,
-    /// diff mode only: the changed region, as (x, y, w, h) in native pixels.
+    /// diff mode only: the changed region in SCREEN coordinates (x and y may be
+    /// negative on a multi-monitor desktop), so it can be compared directly
+    /// against an entity's `bounds` or `click_at`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub changed_region: Option<(u32, u32, u32, u32)>,
+    pub changed_region: Option<(i32, i32, u32, u32)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
     pub elapsed_ms: f64,
@@ -119,6 +125,7 @@ pub fn grab() -> Result<Frame> {
         Ok(Frame {
             w: w as u32,
             h: h as u32,
+            origin: (x, y),
             rgb,
         })
     }
@@ -168,7 +175,12 @@ fn crop(f: &Frame, x: u32, y: u32, w: u32, h: u32) -> Frame {
         let e = s + (w.min(f.w - x) as usize) * 3;
         out.extend_from_slice(&f.rgb[s..e]);
     }
-    Frame { w, h, rgb: out }
+    Frame {
+        w,
+        h,
+        origin: (f.origin.0 + x as i32, f.origin.1 + y as i32),
+        rgb: out,
+    }
 }
 
 fn encode_png(f: &Frame, max_width: u32) -> Result<(Vec<u8>, u32, u32, f64)> {
@@ -208,6 +220,7 @@ pub fn observe_bytes(diff: bool, max_width: u32) -> Result<(Observation, Vec<u8>
                     *last = Some(Frame {
                         w: frame.w,
                         h: frame.h,
+                        origin: frame.origin,
                         rgb: frame.rgb.clone(),
                     });
                     return Ok((
@@ -229,6 +242,7 @@ pub fn observe_bytes(diff: bool, max_width: u32) -> Result<(Observation, Vec<u8>
                     *last = Some(Frame {
                         w: frame.w,
                         h: frame.h,
+                        origin: frame.origin,
                         rgb: frame.rgb.clone(),
                     });
                     // A single hull around scattered changes is mostly unchanged
@@ -246,7 +260,12 @@ pub fn observe_bytes(diff: bool, max_width: u32) -> Result<(Observation, Vec<u8>
                                 png_bytes: 0,
                                 approx_tokens: 0,
                                 changed_fraction: Some(frac),
-                                changed_region: Some((x, y, w, h)),
+                                changed_region: Some((
+                                    frame.origin.0 + x as i32,
+                                    frame.origin.1 + y as i32,
+                                    w,
+                                    h,
+                                )),
                                 note: Some(format!(
                             "{changed_px} scattered pixels changed ({:.3}%) - image withheld, \
                              the region hull is {}x larger than the change itself",
@@ -259,7 +278,7 @@ pub fn observe_bytes(diff: bool, max_width: u32) -> Result<(Observation, Vec<u8>
                     (
                         crop(&frame, x, y, w, h),
                         Some(frac),
-                        Some((x, y, w, h)),
+                        Some((frame.origin.0 + x as i32, frame.origin.1 + y as i32, w, h)),
                         None,
                     )
                 }
@@ -267,6 +286,7 @@ pub fn observe_bytes(diff: bool, max_width: u32) -> Result<(Observation, Vec<u8>
                     *last = Some(Frame {
                         w: frame.w,
                         h: frame.h,
+                        origin: frame.origin,
                         rgb: frame.rgb.clone(),
                     });
                     (
@@ -310,9 +330,14 @@ mod tests {
     use super::*;
 
     fn frame(w: u32, h: u32, fill: u8) -> Frame {
+        frame_at(w, h, fill, (0, 0))
+    }
+
+    fn frame_at(w: u32, h: u32, fill: u8, origin: (i32, i32)) -> Frame {
         Frame {
             w,
             h,
+            origin,
             rgb: vec![fill; (w as usize) * (h as usize) * 3],
         }
     }
@@ -382,6 +407,15 @@ mod tests {
         assert_eq!((c.w, c.h), (2, 2));
         assert_eq!(c.rgb[0], 200);
         assert_eq!(c.rgb.len(), 2 * 2 * 3);
+    }
+
+    /// A monitor left of the primary gives a negative virtual-screen origin;
+    /// a crop taken from it must still describe where it came from on screen.
+    #[test]
+    fn crop_carries_the_screen_origin() {
+        let f = frame_at(100, 100, 0, (-1920, -200));
+        let c = crop(&f, 10, 20, 5, 5);
+        assert_eq!(c.origin, (-1910, -180));
     }
 
     #[test]
