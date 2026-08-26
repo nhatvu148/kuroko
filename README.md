@@ -82,21 +82,21 @@ Latency is app-dependent; Task Manager is slow for both.
 ## What is actually verified
 
 Everything below was exercised by hand on **one machine**: Windows 11 Home 25H2,
-x86_64, a single 1920x1080 display at 96 DPI (scale 1.0), origin (0,0), en-US.
+x86_64, a single 1920x1080 display at origin (0,0), en-US.
 
 | | status |
 |---|---|
 | `discover` / `act` / `observe` | verified against VS Code, Task Manager and an elevated shell |
 | emergency stop, allowlist fail-closed, HTTP auth | verified end to end |
 | lease signing, diff heuristics, stop state machine | unit tested (21 tests) |
-| **display scaling other than 100%** | **NOT verified** — the process reports `per-monitor-aware`, which is necessary but not sufficient |
-| **multiple monitors** | **NOT verified** — no second display here. Negative-origin handling is unit tested only |
+| **display scaling** | verified at **100%, 150% and 175%** — bounds and `click_at` stay in physical pixels and `act` lands on the real control. 175% matters because 1920 ÷ 1.75 does not divide cleanly, so rounding artifacts would show there |
+| **multiple monitors** | **NOT verified** — no second display available. Negative-origin handling is unit tested only |
 | Windows 10, Server, ARM64 | not tested |
 | non-English locale | not tested. `App`-by-name matches localised UIA `Name` values |
 
 `kuroko displays` prints the process's DPI awareness and each monitor's real
 scale factor. If it reports `scale: 1.0` everywhere you have tested, you have not
-tested scaling.
+tested scaling — and a DPI-unaware build looks entirely healthy at 100%.
 
 ## Limits
 
