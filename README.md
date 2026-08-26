@@ -90,9 +90,9 @@ x86_64, a single 1920x1080 display at origin (0,0), en-US.
 | emergency stop, allowlist fail-closed, HTTP auth | verified end to end |
 | lease signing, diff heuristics, stop state machine | unit tested (21 tests) |
 | **display scaling** | verified at **100%, 125%, 150% and 175%** — see below |
-| **multiple monitors** | **NOT verified** — no second display available. Negative-origin handling is unit tested only |
-| Windows 10, Server, ARM64 | not tested |
-| non-English locale | not tested. `App`-by-name matches localised UIA `Name` values |
+| **multiple monitors** | **NOT verified** — no second display available. Negative-origin handling is unit tested only ([#5](https://github.com/nhatvu148/kuroko/issues/5)) |
+| Windows 10, Server, ARM64 | not tested ([#6](https://github.com/nhatvu148/kuroko/issues/6)) |
+| non-English locale | not tested, and the most likely of these to actually break: `App`-by-name matches **localised** UIA `Name` values ([#6](https://github.com/nhatvu148/kuroko/issues/6)) |
 
 ### Display scaling
 
