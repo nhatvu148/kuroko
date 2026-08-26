@@ -36,11 +36,57 @@ pub struct TextResult {
     /// Total lines recognised, so an empty match set can be told apart from
     /// an empty screen.
     pub lines_seen: usize,
+    /// Magnification applied before recognition.
+    pub scale: f32,
     pub elapsed_ms: f64,
 }
 
+/// Glyphs that OCR cannot reliably tell apart in UI fonts, folded to one
+/// representative each.
+///
+/// This is a *matching* fix, not a recognition one. `1` and `I` are genuinely
+/// near-identical in most UI typefaces, so no amount of better recognition
+/// makes `Steps (1)` come back as anything other than `Steps (I)` some of the
+/// time. Folding both sides of the comparison means a caller can ask for what
+/// is actually on screen and still get a hit.
+fn fold_confusables(s: &str) -> String {
+    s.chars()
+        .map(|c| match c.to_ascii_lowercase() {
+            'i' | 'l' | '1' | '|' => '1',
+            'o' | '0' => '0',
+            's' | '5' => '5',
+            'b' | '8' => '8',
+            'z' | '2' => '2',
+            'g' | '9' => '9',
+            other => other,
+        })
+        .collect()
+}
+
+/// Case-insensitive substring, tolerant of the glyph confusions above.
+fn matches_text(haystack: &str, needle: &str) -> bool {
+    haystack.to_lowercase().contains(needle)
+        || fold_confusables(haystack).contains(&fold_confusables(needle))
+}
+
+pub struct FindArgs<'a> {
+    pub query: Option<&'a str>,
+    pub max_matches: usize,
+    /// Restrict OCR to one window's rectangle. Fewer pixels means the upscale
+    /// budget buys more magnification, and it stops a query matching text
+    /// elsewhere on the desktop.
+    pub hwnd: Option<isize>,
+    /// Multiply the image before recognition. Windows.Media.Ocr is tuned for
+    /// document-scale text, not 9px UI chrome; magnifying first is the single
+    /// biggest lever on small-text accuracy. 0 selects automatically.
+    pub scale: f32,
+    /// OCR this PNG instead of the screen. Makes accuracy measurable against a
+    /// fixed image rather than a live desktop that changes between runs.
+    pub image: Option<&'a std::path::Path>,
+}
+
 #[cfg(windows)]
-pub fn find_text(query: Option<&str>, max_matches: usize) -> Result<TextResult> {
+pub fn find_text(args: FindArgs<'_>) -> Result<TextResult> {
     use windows::Graphics::Imaging::BitmapDecoder;
     use windows::Media::Ocr::OcrEngine;
     use windows::Storage::Streams::{DataWriter, InMemoryRandomAccessStream};
@@ -49,8 +95,51 @@ pub fn find_text(query: Option<&str>, max_matches: usize) -> Result<TextResult> 
 
     // Native resolution, deliberately. Downscaling first would shrink every
     // coordinate the OCR reports, and the whole value here is coordinates.
-    let frame = crate::capture::grab()?;
-    let png = crate::capture::encode_png_native(&frame)?;
+    let mut frame = match args.image {
+        Some(p) => crate::capture::frame_from_png(p)?,
+        None => crate::capture::grab()?,
+    };
+
+    // Region of interest, when a window was named.
+    if let Some(h) = args.hwnd {
+        if args.image.is_some() {
+            return Err(anyhow!("--hwnd and --image are mutually exclusive"));
+        }
+        let b = crate::uia::window_bounds(h)?;
+        let (fx, fy) = frame.origin;
+        let x = (b.x - fx).max(0) as u32;
+        let y = (b.y - fy).max(0) as u32;
+        let w = (b.w as u32).min(frame.w.saturating_sub(x));
+        let h2 = (b.h as u32).min(frame.h.saturating_sub(y));
+        if w == 0 || h2 == 0 {
+            return Err(anyhow!("window {h} has no on-screen area (minimised?)"));
+        }
+        frame = crate::capture::crop_frame(&frame, x, y, w, h2);
+    }
+
+    // 1.5x by default, measured rather than guessed. On an Abaqus screen:
+    //
+    //   scale  ms     menu bar  model tree
+    //   1.0    217    6/9       14/15
+    //   1.5    494    6/9       15/15
+    //   2.0    710    6/9       15/15
+    //   3.0    1409   6/9       15/15
+    //
+    // 1.5 recovers the last tree label ("BCs") and everything above it costs
+    // more for nothing - 3x is 6.5x the time at identical accuracy.
+    //
+    // Note what magnification does NOT fix: the menu bar sits at 6/9 no matter
+    // how large the image gets. Upscaling helps when the recognizer's minimum
+    // feature size is the binding constraint; it cannot recover detail the
+    // source raster never captured.
+    let max_dim = OcrEngine::MaxImageDimension().unwrap_or(4096) as f32;
+    let scale = if args.scale > 0.0 {
+        args.scale
+    } else {
+        let longest = frame.w.max(frame.h) as f32;
+        (max_dim / longest).min(1.5).max(1.0)
+    };
+    let png = crate::capture::encode_png_scaled(&frame, scale)?;
 
     // .join() blocks; this whole function runs inside spawn_blocking, so there is
     // no runtime to starve. IAsyncOperation also implements IntoFuture if this
@@ -80,13 +169,18 @@ pub fn find_text(query: Option<&str>, max_matches: usize) -> Result<TextResult> 
     let lines = result.Lines()?;
     let lines_seen = lines.Size()? as usize;
 
-    let needle = query.map(|q| q.trim().to_lowercase()).unwrap_or_default();
+    let needle = args
+        .query
+        .map(|q| q.trim().to_lowercase())
+        .unwrap_or_default();
     let multiword = needle.split_whitespace().count() > 1;
     let (ox, oy) = frame.origin;
+    // OCR ran on a magnified image, so every box it reports is in that space.
+    let unscale = |v: f64| (v / scale as f64) as i32;
     let mut matches = Vec::new();
 
     for line in lines {
-        if matches.len() >= max_matches {
+        if matches.len() >= args.max_matches {
             break;
         }
         let line_text = line.Text()?.to_string();
@@ -94,7 +188,7 @@ pub fn find_text(query: Option<&str>, max_matches: usize) -> Result<TextResult> 
         // A multi-word query is matched against the line, because word boxes
         // cannot express a phrase. A single token is matched per word, which
         // gives a far tighter click target than the whole line.
-        if needle.is_empty() || (multiword && line_text.to_lowercase().contains(&needle)) {
+        if needle.is_empty() || (multiword && matches_text(&line_text, &needle)) {
             let words = line.Words()?;
             // Checked before the subtraction, not inside the tuple below: both
             // operands of a tuple literal are evaluated before any pattern can
@@ -106,10 +200,10 @@ pub fn find_text(query: Option<&str>, max_matches: usize) -> Result<TextResult> 
             }
             if let (Ok(first), Ok(last)) = (words.GetAt(0), words.GetAt(n - 1)) {
                 let (a, b) = (first.BoundingRect()?, last.BoundingRect()?);
-                let x = a.X as i32;
-                let y = a.Y.min(b.Y) as i32;
-                let w = (b.X + b.Width - a.X) as i32;
-                let h = a.Height.max(b.Height) as i32;
+                let x = unscale(a.X as f64);
+                let y = unscale(a.Y.min(b.Y) as f64);
+                let w = unscale((b.X + b.Width - a.X) as f64);
+                let h = unscale(a.Height.max(b.Height) as f64);
                 matches.push(TextMatch {
                     text: line_text,
                     click_at: (ox + x + w / 2, oy + y + h / 2),
@@ -127,13 +221,18 @@ pub fn find_text(query: Option<&str>, max_matches: usize) -> Result<TextResult> 
             continue;
         }
         for word in line.Words()? {
-            if matches.len() >= max_matches {
+            if matches.len() >= args.max_matches {
                 break;
             }
             let wt = word.Text()?.to_string();
-            if wt.to_lowercase().contains(&needle) {
+            if matches_text(&wt, &needle) {
                 let r = word.BoundingRect()?;
-                let (x, y, w, h) = (r.X as i32, r.Y as i32, r.Width as i32, r.Height as i32);
+                let (x, y, w, h) = (
+                    unscale(r.X as f64),
+                    unscale(r.Y as f64),
+                    unscale(r.Width as f64),
+                    unscale(r.Height as f64),
+                );
                 matches.push(TextMatch {
                     text: wt,
                     click_at: (ox + x + w / 2, oy + y + h / 2),
@@ -151,11 +250,44 @@ pub fn find_text(query: Option<&str>, max_matches: usize) -> Result<TextResult> 
         language,
         matches,
         lines_seen,
+        scale,
         elapsed_ms: t0.elapsed().as_secs_f64() * 1000.0,
     })
 }
 
 #[cfg(not(windows))]
-pub fn find_text(_q: Option<&str>, _m: usize) -> Result<TextResult> {
+pub fn find_text(_a: FindArgs<'_>) -> Result<TextResult> {
     anyhow::bail!("OCR requires Windows")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folds_glyphs_ocr_cannot_separate() {
+        assert_eq!(fold_confusables("Steps (1)"), fold_confusables("Steps (I)"));
+        assert_eq!(fold_confusables("Model-1"), fold_confusables("Model-l"));
+        assert_eq!(fold_confusables("B0"), fold_confusables("80"));
+    }
+
+    #[test]
+    fn matches_through_a_digit_letter_confusion() {
+        assert!(matches_text("Steps (I)", "steps (1)"));
+        assert!(matches_text("Model-I", "model-1"));
+        assert!(matches_text("Job-l", "job-1"));
+    }
+
+    #[test]
+    fn exact_matching_still_works() {
+        assert!(matches_text("Materials", "materials"));
+        assert!(matches_text("Assembly", "assem"));
+    }
+
+    /// Folding must not collapse genuinely different words into each other.
+    #[test]
+    fn does_not_match_unrelated_text() {
+        assert!(!matches_text("Materials", "assembly"));
+        assert!(!matches_text("Parts", "loads"));
+    }
 }

@@ -326,6 +326,56 @@ pub fn encode_png_native(f: &Frame) -> Result<Vec<u8>> {
     encode_png(f, 0).map(|(png, _, _, _)| png)
 }
 
+/// Magnified PNG for recognition. `scale` above 1.0 enlarges; the caller is
+/// responsible for dividing the coordinates back out.
+///
+/// Deliberately does not route through `encode_png`, whose `max_width` only
+/// ever shrinks (`f.w > max_width`) - passing a larger width there is a silent
+/// no-op, which is exactly how an "upscale" knob came to do nothing at all.
+pub fn encode_png_scaled(f: &Frame, scale: f32) -> Result<Vec<u8>> {
+    use image::ImageEncoder;
+    if scale <= 1.0 {
+        return encode_png_native(f);
+    }
+    let img = image::RgbImage::from_raw(f.w, f.h, f.rgb.clone())
+        .ok_or_else(|| anyhow!("frame buffer size does not match {}x{}", f.w, f.h))?;
+    let (w, h) = (
+        ((f.w as f32) * scale).round().max(1.0) as u32,
+        ((f.h as f32) * scale).round().max(1.0) as u32,
+    );
+    // Lanczos3 rather than Triangle: upscaling for a recogniser wants sharp
+    // glyph edges, and bilinear softens exactly the strokes it needs to read.
+    let big = image::imageops::resize(&img, w, h, image::imageops::FilterType::Lanczos3);
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png).write_image(
+        big.as_raw(),
+        w,
+        h,
+        image::ExtendedColorType::Rgb8,
+    )?;
+    Ok(png)
+}
+
+/// Load a PNG as a frame, so accuracy can be measured against a fixed image
+/// rather than a live desktop that changes between runs.
+pub fn frame_from_png(path: &std::path::Path) -> Result<Frame> {
+    let img = image::open(path)
+        .map_err(|e| anyhow!("cannot read {}: {e}", path.display()))?
+        .to_rgb8();
+    Ok(Frame {
+        w: img.width(),
+        h: img.height(),
+        // A file has no place on screen; coordinates come back image-relative.
+        origin: (0, 0),
+        rgb: img.into_raw(),
+    })
+}
+
+/// Crop exposed for the OCR region-of-interest path.
+pub fn crop_frame(f: &Frame, x: u32, y: u32, w: u32, h: u32) -> Frame {
+    crop(f, x, y, w, h)
+}
+
 /// CLI convenience wrapper: same thing, but writes the PNG to disk.
 pub fn observe(diff: bool, max_width: u32, out_path: Option<&str>) -> Result<Observation> {
     let (obs, png) = observe_bytes(diff, max_width)?;

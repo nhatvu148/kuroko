@@ -120,9 +120,12 @@ tested scaling — and a DPI-unaware build looks entirely healthy at 100%.
 
 - Apps that draw their own UI expose no tree. Abaqus/CAE returns six elements, all window chrome.
   `find_text` is the fallback: OCR via `Windows.Media.Ocr`, returning text with screen coordinates.
-  It reads 14 of 15 Abaqus model-tree labels, but small dense text degrades — a menu bar came back as
-  `Eile Model Vieuport Yiew eart Shape`, and digits are read as letters (`Steps (1)` → `Steps (I)`).
-  Where the application has a scripting API, prefer that over either.
+  It reads **15 of 15** Abaqus model-tree labels. Small dense text still degrades: Abaqus's menu bar
+  sits at 6/9 words and **magnification does not move it** — upscaling helps when the recogniser's
+  minimum feature size is the constraint, not when the source raster never captured the detail.
+  Digit/letter confusion (`Steps (1)` → `Steps (I)`) is handled in the *matcher* rather than the
+  recogniser, by folding glyph pairs OCR cannot separate. Where the application has a scripting API,
+  prefer that over either.
 - UAC *consent* prompts live on the Secure Desktop and are unreachable by any process, elevated or not.
 - Must run in the interactive session. Session 0 has no desktop.
 

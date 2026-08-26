@@ -58,6 +58,10 @@ pub struct FindTextParams {
     pub query: Option<String>,
     /// Cap on returned matches. Default 50.
     pub max_matches: Option<usize>,
+    /// Restrict OCR to one window from `windows`. Strongly preferred: fewer
+    /// pixels means more magnification and better accuracy, and it stops a
+    /// query matching text elsewhere on the desktop.
+    pub hwnd: Option<isize>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -214,11 +218,20 @@ impl Wincrust {
     ) -> Result<Json<ocr::TextResult>, McpError> {
         let q = p.query;
         let max = p.max_matches.unwrap_or(50);
-        tokio::task::spawn_blocking(move || ocr::find_text(q.as_deref(), max))
-            .await
-            .map_err(|e| McpError::internal_error(e.to_string(), None))?
-            .map(Json)
-            .map_err(|e| McpError::internal_error(e.to_string(), None))
+        let hwnd = p.hwnd;
+        tokio::task::spawn_blocking(move || {
+            ocr::find_text(ocr::FindArgs {
+                query: q.as_deref(),
+                max_matches: max,
+                hwnd,
+                scale: 0.0,
+                image: None,
+            })
+        })
+        .await
+        .map_err(|e| McpError::internal_error(e.to_string(), None))?
+        .map(Json)
+        .map_err(|e| McpError::internal_error(e.to_string(), None))
     }
 
     #[tool(
