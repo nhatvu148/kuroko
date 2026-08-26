@@ -331,7 +331,10 @@ mod tests {
         assert!(s.step(t, TICK, false), "released immediately on leaving");
 
         t = left_at + COOLDOWN.as_millis() as u64 - TICK;
-        assert!(s.step(t, TICK, false), "released before the cooldown elapsed");
+        assert!(
+            s.step(t, TICK, false),
+            "released before the cooldown elapsed"
+        );
 
         t = left_at + COOLDOWN.as_millis() as u64 + TICK;
         assert!(!s.step(t, TICK, false), "still latched after the cooldown");
