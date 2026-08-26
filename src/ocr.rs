@@ -137,7 +137,7 @@ pub fn find_text(args: FindArgs<'_>) -> Result<TextResult> {
         args.scale
     } else {
         let longest = frame.w.max(frame.h) as f32;
-        (max_dim / longest).min(1.5).max(1.0)
+        (max_dim / longest).clamp(1.0, 1.5)
     };
     let png = crate::capture::encode_png_scaled(&frame, scale)?;
 
