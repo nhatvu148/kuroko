@@ -41,7 +41,8 @@ run with an admin token.
 
 Once it is running, [docs/USING.md](docs/USING.md) covers what to actually ask
 it, how to read what `act` gives back, and - more useful than either - when to
-use SSH instead.
+use SSH instead. [skills/wincrust](skills/wincrust/SKILL.md) is the same
+judgement as a Claude Code skill: `cp -r skills/wincrust ~/.claude/skills/`.
 
 
 The server has to run on Windows, because it drives a Windows desktop. The
