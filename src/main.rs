@@ -58,11 +58,14 @@ enum Command {
         /// matches from elsewhere on the desktop.
         #[arg(long)]
         hwnd: Option<isize>,
-        /// Magnify before recognition. 0 chooses automatically.
+        /// Magnify before recognition. 0 chooses automatically. Values below
+        /// 1.0 do not shrink - nothing is resized and the reported scale says so.
         #[arg(long, default_value_t = 0.0)]
         scale: f32,
         /// OCR this PNG instead of the screen, for reproducible measurement.
-        #[arg(long)]
+        /// Rejected at parse time alongside --hwnd rather than after the file
+        /// has already been read.
+        #[arg(long, conflicts_with = "hwnd")]
         image: Option<std::path::PathBuf>,
         /// Pixel preparation: none | gray | contrast | otsu | sharpen.
         #[arg(long, default_value = "none")]
