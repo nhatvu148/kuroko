@@ -169,10 +169,23 @@ if ($Start) {
 }
 
 if ($Stop) {
-    if (-not (Test-TaskRegistered)) { Deny-NotRegistered }
-    Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    # Deliberately NOT guarded on the task existing. Unregistering a task does
+    # not stop a running server, so a stop that refuses when the task is gone
+    # leaves an elevated, network-listening process alive - the one outcome
+    # -Stop must never produce. The task is stopped if it is there; the
+    # process is killed either way.
+    if (Test-TaskRegistered) {
+        Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    } else {
+        Write-Host "scheduled task '$TaskName' is not registered - stopping any orphaned process anyway"
+    }
+    $was = @(Get-Process wincrust -ErrorAction SilentlyContinue)
     Stop-Server
-    Write-Host "stopped $TaskName"
+    if ($was.Count -gt 0) {
+        Write-Host "stopped $($was.Count) running wincrust process(es)"
+    } else {
+        Write-Host 'no wincrust process was running'
+    }
     return
 }
 
