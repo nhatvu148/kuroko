@@ -403,6 +403,28 @@ fn generation_of(w: &WindowInfo) -> u64 {
     h.finish()
 }
 
+/// The same as [`guard!`], for failures that happen *after* an element was
+/// found. These carry `matched_by`, because "found it, but it is disabled" is
+/// a different situation from "no such element" and the status alone cannot
+/// tell them apart. It also makes the match ladder observable without
+/// performing an action: asking a control for a pattern it does not have
+/// resolves the selector, reports the tier, and changes nothing.
+macro_rules! guard_found {
+    ($status:expr, $action:expr, $target:expr, $t0:expr, $detail:expr, $by:expr, $tier:expr) => {
+        return Ok(ActResult {
+            ok: false,
+            action: $action.to_string(),
+            status: $status.to_string(),
+            target: $target,
+            resolved_by: $by.to_string(),
+            matched_by: $tier,
+            screen_changed: None,
+            detail: Some($detail),
+            elapsed_ms: $t0.elapsed().as_secs_f64() * 1000.0,
+        })
+    };
+}
+
 macro_rules! guard {
     ($status:expr, $action:expr, $target:expr, $t0:expr, $detail:expr, $by:expr) => {
         return Ok(ActResult {
@@ -629,23 +651,25 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
 
         // Guard 3: is it in a state where acting makes sense?
         if !el.CachedIsEnabled().map(|b| b.as_bool()).unwrap_or(true) {
-            guard!(
+            guard_found!(
                 "disabled",
                 args.action,
                 target,
                 t0,
                 "control is disabled".to_string(),
-                by
+                by,
+                matched_by
             );
         }
         if el.CachedIsOffscreen().map(|b| b.as_bool()).unwrap_or(false) {
-            guard!(
+            guard_found!(
                 "moved",
                 args.action,
                 target,
                 t0,
                 "control is offscreen".to_string(),
-                by
+                by,
+                matched_by
             );
         }
 
@@ -672,32 +696,35 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
             "select" => el
                 .GetCachedPatternAs::<IUIAutomationSelectionItemPattern>(UIA_SelectionItemPatternId)
                 .map(|p| p.Select().map(|_| "selected".to_string())),
-            other => guard!(
+            other => guard_found!(
                 "pattern_gone",
                 args.action,
                 target,
                 t0,
                 format!("unknown action '{other}'"),
-                by
+                by,
+                matched_by
             ),
         };
 
         match ok_detail {
-            Err(_) => guard!(
+            Err(_) => guard_found!(
                 "pattern_gone",
                 args.action,
                 target,
                 t0,
                 format!("control no longer supports '{}'", args.action),
-                by
+                by,
+                matched_by
             ),
-            Ok(Err(e)) => guard!(
+            Ok(Err(e)) => guard_found!(
                 "pattern_gone",
                 args.action,
                 target,
                 t0,
                 format!("pattern call failed: {e}"),
-                by
+                by,
+                matched_by
             ),
             Ok(Ok(detail)) => Ok(ActResult {
                 ok: true,

@@ -313,11 +313,12 @@ pub fn find_text(args: FindArgs<'_>) -> Result<TextResult> {
         }
     }
 
-    // A word read cleanly outranks one that matched only after folding
-    // characters the recogniser confuses; drop the weaker reads rather than
-    // returning both and leaving the caller to call it ambiguous.
-    crate::text::keep_best(&mut matches, |m| m.matched_by);
-
+    // Deliberately NOT narrowed to the best tier here. `find_text` is a survey
+    // of the screen and is documented to return every occurrence, so ranking
+    // globally would drop a real match at one location merely because a
+    // tighter one exists somewhere else entirely. Each match carries its tier
+    // instead, and the caller that needs a single target - `ocr_fallback` -
+    // narrows there, where "one match" is actually the requirement.
     Ok(TextResult {
         language,
         available_languages: available,

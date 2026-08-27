@@ -508,7 +508,7 @@ async fn ocr_fallback(query: &str, action: &str, mut r: uia::ActResult) -> uia::
         r.clone()
     };
 
-    let res = match found {
+    let mut res = match found {
         Ok(Ok(res)) => res,
         Ok(Err(e)) => {
             return fail(
@@ -518,6 +518,13 @@ async fn ocr_fallback(query: &str, action: &str, mut r: uia::ActResult) -> uia::
         }
         Err(e) => return fail("not_found", format!("OCR task failed: {e}")),
     };
+    // This path needs exactly one target, so a clean read outranks one that
+    // survived only by folding characters the recogniser confuses. Narrowing
+    // here rescues clicks that would otherwise be refused as `ambiguous`;
+    // `find_text` itself stays unfiltered, being a survey rather than a
+    // resolution.
+    crate::text::keep_best(&mut res.matches, |m| m.matched_by);
+
     match res.matches.len() {
         0 => {
             return fail(
