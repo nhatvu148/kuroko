@@ -57,6 +57,11 @@ schemars = "1.2.2"
 axum = "0.8.9"
 unicode-normalization = "0.1"
 
+[dev-dependencies]
+# Already in the tree via axum/rmcp; named here so the host-allowlist tests can
+# parse authorities exactly the way rmcp does.
+http = "1"
+
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = [
   "Win32_Foundation",

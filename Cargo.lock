@@ -1493,6 +1493,7 @@ dependencies = [
  "clap",
  "getrandom",
  "hmac",
+ "http",
  "image",
  "rmcp",
  "schemars",

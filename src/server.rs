@@ -408,7 +408,17 @@ fn allowed_hosts_for(mut default: Vec<String>, host: &str, port: u16) -> Vec<Str
     if default.is_empty() {
         return default;
     }
-    for h in [host.to_string(), format!("{host}:{port}")] {
+    // An IPv6 literal has to be bracketed to survive authority parsing:
+    // `fd7a::1:8900` is ambiguous with the address itself and does not parse,
+    // so an unbracketed entry becomes a dead one that matches nothing. rmcp
+    // strips brackets when normalising, so the bracketed form still compares
+    // equal to a plain `Host` header.
+    let bare = match host.trim_matches(['[', ']']).parse::<std::net::Ipv6Addr>() {
+        Ok(_) => format!("[{}]", host.trim_matches(['[', ']'])),
+        Err(_) => host.to_string(),
+    };
+    let with_port = format!("{bare}:{port}");
+    for h in [bare, with_port] {
         if !default.contains(&h) {
             default.push(h);
         }
@@ -685,27 +695,68 @@ mod host_tests {
         vec!["localhost".into(), "127.0.0.1".into(), "::1".into()]
     }
 
+    /// rmcp's own matching, reproduced through the same `http::uri::Authority`
+    /// it uses: parse each entry, fall back to a bare hostname when it will not
+    /// parse, strip brackets, and compare. Asserting on the returned `Vec`
+    /// alone proved only that a string was present - not that rmcp would ever
+    /// match it, which is precisely where the IPv6 entry went wrong.
+    fn rmcp_would_allow(allowed: &[String], host_header: &str) -> bool {
+        fn norm(h: &str) -> String {
+            h.trim_matches('[').trim_matches(']').to_ascii_lowercase()
+        }
+        fn parse(s: &str) -> (String, Option<u16>) {
+            match http::uri::Authority::try_from(s) {
+                Ok(a) => (norm(a.host()), a.port_u16()),
+                Err(_) => (norm(s), None),
+            }
+        }
+        let (hh, hp) = parse(host_header);
+        allowed
+            .iter()
+            .map(|a| parse(a))
+            .any(|(ah, ap)| ah == hh && ap.is_none_or(|p| hp == Some(p)))
+    }
+
     #[test]
     fn a_tailscale_bind_becomes_reachable() {
         // The shipped 0.1.0 bug: this address answered 403 on every request.
         let out = allowed_hosts_for(loopback(), "100.78.123.110", 8900);
-        assert!(out.contains(&"100.78.123.110".to_string()));
-        assert!(out.contains(&"100.78.123.110:8900".to_string()));
+        assert!(rmcp_would_allow(&out, "100.78.123.110:8900"));
+    }
+
+    #[test]
+    fn an_ipv6_bind_is_bracketed_so_the_port_entry_is_not_dead() {
+        // `fd7a::1:8900` does not parse as an authority, so an unbracketed
+        // entry silently matches nothing and the port is never enforced.
+        let out = allowed_hosts_for(loopback(), "fd7a:115c:a1e0::1", 8900);
+        assert!(
+            out.contains(&"[fd7a:115c:a1e0::1]:8900".to_string()),
+            "{out:?}"
+        );
+        assert!(rmcp_would_allow(&out, "[fd7a:115c:a1e0::1]:8900"));
+    }
+
+    #[test]
+    fn an_already_bracketed_ipv6_host_is_not_double_bracketed() {
+        let out = allowed_hosts_for(loopback(), "[fd7a:115c:a1e0::1]", 8900);
+        assert!(!out.iter().any(|h| h.contains("[[")), "{out:?}");
+        assert!(rmcp_would_allow(&out, "[fd7a:115c:a1e0::1]:8900"));
     }
 
     #[test]
     fn loopback_still_works_and_is_not_duplicated() {
         let out = allowed_hosts_for(loopback(), "127.0.0.1", 8900);
         assert_eq!(out.iter().filter(|h| *h == "127.0.0.1").count(), 1);
-        assert!(out.contains(&"127.0.0.1:8900".to_string()));
+        assert!(rmcp_would_allow(&out, "127.0.0.1:8900"));
     }
 
     #[test]
-    fn everything_else_is_still_rejected() {
-        // The point of the fix is that it does NOT disable the check.
+    fn an_unlisted_host_is_rejected_by_the_same_matching() {
+        // Named for what it checks: rmcp's matching, not just Vec contents.
         let out = allowed_hosts_for(loopback(), "100.78.123.110", 8900);
-        assert!(!out.contains(&"evil.example.com".to_string()));
-        assert!(!out.iter().any(|h| h.contains("evil")));
+        assert!(!rmcp_would_allow(&out, "evil.example.com"));
+        assert!(!rmcp_would_allow(&out, "evil.example.com:8900"));
+        assert!(!rmcp_would_allow(&out, "100.78.123.111:8900"));
     }
 
     #[test]
