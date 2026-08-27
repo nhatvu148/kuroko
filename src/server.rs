@@ -84,6 +84,13 @@ pub struct ObserveParams {
     pub detail: Option<String>,
     /// Downscale width before encoding. Default 1400; 0 for native.
     pub max_width: Option<u32>,
+    /// Render this window on demand instead of reading the desktop.
+    ///
+    /// Use it whenever the target draws with OpenGL or Direct3D - a CAD or
+    /// simulation viewport, a game, a video pane. A screen read returns those
+    /// regions as flat clear colour, which is indistinguishable from an empty
+    /// viewport and has been mistaken for one.
+    pub hwnd: Option<isize>,
 }
 
 /// What `launch` did, and what a caller needs to find the result.
@@ -283,7 +290,10 @@ impl Wincrust {
     #[tool(
         name = "observe",
         description = "See the screen. `diff` is much cheaper than `image` during a wait - it \
-                       returns nothing at all when the screen has not changed."
+                       returns nothing at all when the screen has not changed. WITHOUT `hwnd` this \
+                       reads the desktop, which does NOT contain hardware-accelerated content: an \
+                       OpenGL or Direct3D viewport comes back as flat colour that looks exactly \
+                       like an empty one. Pass `hwnd` to render that window on demand instead."
     )]
     async fn observe(
         &self,
@@ -321,8 +331,9 @@ impl Wincrust {
 
         let is_diff = detail == "diff";
         let max_width = p.max_width.unwrap_or(1400);
+        let hwnd = p.hwnd;
         let (obs, png) =
-            tokio::task::spawn_blocking(move || capture::observe_bytes(is_diff, max_width))
+            tokio::task::spawn_blocking(move || capture::observe_bytes(is_diff, max_width, hwnd))
                 .await
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?
                 .map_err(|e| McpError::internal_error(e.to_string(), None))?;

@@ -96,6 +96,11 @@ enum Command {
         /// Write the PNG here.
         #[arg(long)]
         out: Option<String>,
+        /// Render this window on demand instead of reading the desktop. The
+        /// only way to see an OpenGL or Direct3D viewport, which a screen read
+        /// returns as flat colour indistinguishable from an empty one.
+        #[arg(long)]
+        hwnd: Option<isize>,
         /// Observe this many times in ONE process. Diff needs a live process to
         /// hold the previous frame, so a single CLI shot can never exercise it.
         #[arg(long, default_value_t = 1)]
@@ -256,6 +261,7 @@ async fn main() -> Result<()> {
             out,
             watch,
             interval_ms,
+            hwnd,
         } => match detail.as_str() {
             "text" => {
                 let wins = engine.list_windows().await?;
@@ -287,7 +293,7 @@ async fn main() -> Result<()> {
                     }
                     let out = out.clone();
                     let o = tokio::task::spawn_blocking(move || {
-                        capture::observe(is_diff, max_width, out.as_deref())
+                        capture::observe(is_diff, max_width, out.as_deref(), hwnd)
                     })
                     .await??;
                     println!("{}", serde_json::to_string(&o)?);

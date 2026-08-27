@@ -89,6 +89,114 @@ pub fn session_is_locked() -> bool {
     false
 }
 
+/// Capture one window through `PrintWindow(PW_RENDERFULLCONTENT)`.
+///
+/// `BitBlt` from the screen DC reads the desktop surface, and hardware
+/// accelerated content - OpenGL and Direct3D viewports - is composited by DWM
+/// rather than drawn into it. The result is not an error: it is a flat
+/// clear-colour rectangle where the 3D content should be, which reads exactly
+/// like an empty viewport. Measured on a CAD viewport showing a cone, every
+/// canvas pixel came back 207,221,238 while a translucent toolbar strip over
+/// the same canvas carried the model's own colour - proof the content reached
+/// the compositor and not the read.
+///
+/// `PW_RENDERFULLCONTENT` asks the window to render itself, that content
+/// included. It is not universal - some applications still return blank - so
+/// the caller is told which path produced an image rather than left to assume.
+#[cfg(windows)]
+pub fn capture_window(hwnd: isize) -> Result<Frame> {
+    use windows::Win32::Foundation::{HWND, RECT};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowRect, IsWindow, PrintWindow, PRINT_WINDOW_FLAGS,
+    };
+
+    // Stable since 8.1: render the full content, accelerated surfaces included.
+    const PW_RENDERFULLCONTENT: u32 = 0x0000_0002;
+
+    unsafe {
+        let h = HWND(hwnd as *mut _);
+        if !IsWindow(Some(h)).as_bool() {
+            return Err(anyhow!("window {hwnd} no longer exists"));
+        }
+        let mut r = RECT::default();
+        GetWindowRect(h, &mut r)?;
+        let (w, ht) = (r.right - r.left, r.bottom - r.top);
+        if w <= 0 || ht <= 0 {
+            return Err(anyhow!("window {hwnd} has no area ({w}x{ht})"));
+        }
+
+        let screen = GetDC(None);
+        if screen.is_invalid() {
+            return Err(anyhow!("GetDC failed"));
+        }
+        let mem = CreateCompatibleDC(Some(screen));
+        let bmp = CreateCompatibleBitmap(screen, w, ht);
+        let old = SelectObject(mem, bmp.into());
+
+        let ok = PrintWindow(h, mem, PRINT_WINDOW_FLAGS(PW_RENDERFULLCONTENT));
+
+        let mut bi = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: w,
+                biHeight: -ht,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut bgra = vec![0u8; (w as usize) * (ht as usize) * 4];
+        let rows = GetDIBits(
+            mem,
+            bmp,
+            0,
+            ht as u32,
+            Some(bgra.as_mut_ptr() as *mut _),
+            &mut bi,
+            DIB_RGB_COLORS,
+        );
+
+        SelectObject(mem, old);
+        let _ = DeleteObject(bmp.into());
+        let _ = DeleteDC(mem);
+        ReleaseDC(None, screen);
+
+        if !ok.as_bool() {
+            return Err(anyhow!(
+                "PrintWindow failed for {hwnd} - the window may not support rendering on demand"
+            ));
+        }
+        if rows == 0 {
+            return Err(anyhow!("GetDIBits returned no scanlines"));
+        }
+
+        let mut rgb = Vec::with_capacity((w as usize) * (ht as usize) * 3);
+        let mut i = 0usize;
+        while i + 3 < bgra.len() {
+            rgb.push(bgra[i + 2]);
+            rgb.push(bgra[i + 1]);
+            rgb.push(bgra[i]);
+            i += 4;
+        }
+        Ok(Frame {
+            w: w as u32,
+            h: ht as u32,
+            // Window pixels still need screen coordinates, so the origin
+            // travels with the frame exactly as for a screen capture and any
+            // click target derived from it stays correct.
+            origin: (r.left, r.top),
+            rgb,
+        })
+    }
+}
+
+#[cfg(not(windows))]
+pub fn capture_window(_hwnd: isize) -> Result<Frame> {
+    anyhow::bail!("window capture requires Windows")
+}
+
 #[cfg(windows)]
 pub fn grab() -> Result<Frame> {
     unsafe {
@@ -247,9 +355,20 @@ fn encode_png(f: &Frame, max_width: u32) -> Result<(Vec<u8>, u32, u32, f64)> {
 }
 
 /// `image` mode: whole screen. `diff` mode: only what moved, or nothing at all.
-pub fn observe_bytes(diff: bool, max_width: u32) -> Result<(Observation, Vec<u8>)> {
+///
+/// With `hwnd`, one window is rendered on demand instead of read off the
+/// desktop - the only way to see an OpenGL or Direct3D viewport, which DWM
+/// composites and a screen read therefore misses entirely.
+pub fn observe_bytes(
+    diff: bool,
+    max_width: u32,
+    hwnd: Option<isize>,
+) -> Result<(Observation, Vec<u8>)> {
     let t0 = std::time::Instant::now();
-    let frame = grab()?;
+    let frame = match hwnd {
+        Some(h) => capture_window(h)?,
+        None => grab()?,
+    };
 
     let (target, changed_fraction, changed_region, note) =
         if diff {
@@ -574,8 +693,13 @@ pub fn crop_frame(f: &Frame, x: u32, y: u32, w: u32, h: u32) -> Frame {
 }
 
 /// CLI convenience wrapper: same thing, but writes the PNG to disk.
-pub fn observe(diff: bool, max_width: u32, out_path: Option<&str>) -> Result<Observation> {
-    let (obs, png) = observe_bytes(diff, max_width)?;
+pub fn observe(
+    diff: bool,
+    max_width: u32,
+    out_path: Option<&str>,
+    hwnd: Option<isize>,
+) -> Result<Observation> {
+    let (obs, png) = observe_bytes(diff, max_width, hwnd)?;
     if let (Some(p), false) = (out_path, png.is_empty()) {
         std::fs::write(p, &png)?;
     }
