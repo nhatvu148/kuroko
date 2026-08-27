@@ -319,11 +319,45 @@ pub fn observe_bytes(diff: bool, max_width: u32) -> Result<(Observation, Vec<u8>
     Ok((obs, png))
 }
 
-/// Native-resolution PNG. OCR needs this rather than the downscaled image the
-/// observe path produces: every coordinate it returns is in image space, so
-/// shrinking the input first would shrink every answer with it.
-pub fn encode_png_native(f: &Frame) -> Result<Vec<u8>> {
-    encode_png(f, 0).map(|(png, _, _, _)| png)
+/// Magnified PNG for recognition. `scale` above 1.0 enlarges; the caller is
+/// responsible for dividing the coordinates back out.
+///
+/// Deliberately does not route through `encode_png`, whose `max_width` only
+/// ever shrinks (`f.w > max_width`) - passing a larger width there is a silent
+/// no-op, which is exactly how an "upscale" knob came to do nothing at all.
+pub fn encode_png_scaled(f: &Frame, scale: f32, prep: Prep) -> Result<Vec<u8>> {
+    use image::ImageEncoder;
+    let img = image::RgbImage::from_raw(f.w, f.h, f.rgb.clone())
+        .ok_or_else(|| anyhow!("frame buffer size does not match {}x{}", f.w, f.h))?;
+    // Sharpen and threshold BEFORE magnifying: applied afterwards they act on
+    // interpolated pixels the recogniser never needed to see.
+    let img = preprocess(img, prep);
+    if scale <= 1.0 {
+        let (w, h) = (img.width(), img.height());
+        let mut png = Vec::new();
+        image::codecs::png::PngEncoder::new(&mut png).write_image(
+            img.as_raw(),
+            w,
+            h,
+            image::ExtendedColorType::Rgb8,
+        )?;
+        return Ok(png);
+    }
+    let (w, h) = (
+        ((f.w as f32) * scale).round().max(1.0) as u32,
+        ((f.h as f32) * scale).round().max(1.0) as u32,
+    );
+    // Lanczos3 rather than Triangle: upscaling for a recogniser wants sharp
+    // glyph edges, and bilinear softens exactly the strokes it needs to read.
+    let big = image::imageops::resize(&img, w, h, image::imageops::FilterType::Lanczos3);
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png).write_image(
+        big.as_raw(),
+        w,
+        h,
+        image::ExtendedColorType::Rgb8,
+    )?;
+    Ok(png)
 }
 
 /// What to do to the pixels before handing them to a recogniser.
@@ -381,7 +415,7 @@ fn to_gray(img: &image::RgbImage) -> image::GrayImage {
 }
 
 /// Otsu: the threshold that minimises intra-class variance. Standard for
-/// document binarisation; whether it suits anti-aliased UI text is the question.
+/// document binarisation; measurably wrong for anti-aliased UI text.
 fn otsu_threshold(g: &image::GrayImage) -> u8 {
     let mut hist = [0u32; 256];
     for p in g.pixels() {
@@ -394,8 +428,8 @@ fn otsu_threshold(g: &image::GrayImage) -> u8 {
         .map(|(i, c)| i as f64 * *c as f64)
         .sum();
     let (mut sum_b, mut w_b, mut best, mut best_t) = (0.0f64, 0u32, -1.0f64, 0u8);
-    for t in 0..256 {
-        w_b += hist[t];
+    for (t, &count) in hist.iter().enumerate() {
+        w_b += count;
         if w_b == 0 {
             continue;
         }
@@ -403,7 +437,7 @@ fn otsu_threshold(g: &image::GrayImage) -> u8 {
         if w_f == 0 {
             break;
         }
-        sum_b += t as f64 * hist[t] as f64;
+        sum_b += t as f64 * count as f64;
         let m_b = sum_b / w_b as f64;
         let m_f = (sum - sum_b) / w_f as f64;
         let var = w_b as f64 * w_f as f64 * (m_b - m_f) * (m_b - m_f);
@@ -433,59 +467,18 @@ fn preprocess(img: image::RgbImage, prep: Prep) -> image::RgbImage {
             let span = hi.saturating_sub(lo).max(1) as f32;
             gray_to_rgb(image::GrayImage::from_fn(g.width(), g.height(), |x, y| {
                 let v = g.get_pixel(x, y).0[0];
-                image::Luma([(((v.saturating_sub(lo)) as f32 / span) * 255.0) as u8])
+                image::Luma([((v.saturating_sub(lo) as f32 / span) * 255.0) as u8])
             }))
         }
         Prep::Otsu => {
             let g = to_gray(&img);
-            let t = otsu_threshold(&g);
+            let th = otsu_threshold(&g);
             gray_to_rgb(image::GrayImage::from_fn(g.width(), g.height(), |x, y| {
-                image::Luma([if g.get_pixel(x, y).0[0] > t { 255 } else { 0 }])
+                image::Luma([if g.get_pixel(x, y).0[0] > th { 255 } else { 0 }])
             }))
         }
         Prep::Sharpen => image::imageops::unsharpen(&img, 1.0, 4),
     }
-}
-
-/// Magnified PNG for recognition. `scale` above 1.0 enlarges; the caller is
-/// responsible for dividing the coordinates back out.
-///
-/// Deliberately does not route through `encode_png`, whose `max_width` only
-/// ever shrinks (`f.w > max_width`) - passing a larger width there is a silent
-/// no-op, which is exactly how an "upscale" knob came to do nothing at all.
-pub fn encode_png_scaled(f: &Frame, scale: f32, prep: Prep) -> Result<Vec<u8>> {
-    use image::ImageEncoder;
-    let img = image::RgbImage::from_raw(f.w, f.h, f.rgb.clone())
-        .ok_or_else(|| anyhow!("frame buffer size does not match {}x{}", f.w, f.h))?;
-    // Sharpen and threshold BEFORE magnifying: applied afterwards they act on
-    // interpolated pixels the recogniser never needed to see.
-    let img = preprocess(img, prep);
-    if scale <= 1.0 {
-        let (w, h) = (img.width(), img.height());
-        let mut png = Vec::new();
-        image::codecs::png::PngEncoder::new(&mut png).write_image(
-            img.as_raw(),
-            w,
-            h,
-            image::ExtendedColorType::Rgb8,
-        )?;
-        return Ok(png);
-    }
-    let (w, h) = (
-        ((f.w as f32) * scale).round().max(1.0) as u32,
-        ((f.h as f32) * scale).round().max(1.0) as u32,
-    );
-    // Lanczos3 rather than Triangle: upscaling for a recogniser wants sharp
-    // glyph edges, and bilinear softens exactly the strokes it needs to read.
-    let big = image::imageops::resize(&img, w, h, image::imageops::FilterType::Lanczos3);
-    let mut png = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut png).write_image(
-        big.as_raw(),
-        w,
-        h,
-        image::ExtendedColorType::Rgb8,
-    )?;
-    Ok(png)
 }
 
 /// Load a PNG as a frame, so accuracy can be measured against a fixed image
