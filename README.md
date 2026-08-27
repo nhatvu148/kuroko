@@ -85,19 +85,48 @@ Latency is app-dependent; Task Manager is slow for both.
 ## What is actually verified
 
 Everything below was exercised by hand on **one machine**: Windows 11 Home 25H2,
-x86_64, a single 1920x1080 display at origin (0,0), en-US.
+x86_64, en-US, on one and two 1920x1080 displays.
 
 | | status |
 |---|---|
 | `discover` / `act` / `observe` | verified against VS Code, Task Manager and an elevated shell |
 | emergency stop, allowlist fail-closed, HTTP auth | verified end to end |
-| lease signing, diff heuristics, stop state machine | unit tested (21 tests) |
+| lease signing, diff heuristics, stop state machine, label matching, coordinate arithmetic | unit tested (51 tests) |
 | **display scaling** | verified at **100%, 125%, 150% and 175%** — see below |
-| **multiple monitors** | **NOT verified** — no second display available. Negative-origin handling is unit tested only ([#5](https://github.com/nhatvu148/wincrust/issues/5)) |
+| **multiple monitors** | **verified** on two displays, including a negative virtual-screen origin — see below |
 | **non-English labels** | **verified** against a real UIA tree carrying Japanese, German, Vietnamese and full-width labels — see below |
 | ARM64 | cross-compiles in CI (`aarch64-pc-windows-msvc`); never run, and never on an ARM64 host |
 | Windows 10 | not tested ([#6](https://github.com/nhatvu148/wincrust/issues/6)) |
 | Windows Server | **out of scope.** Some configurations have no interactive desktop at all, and this crate requires one |
+
+### Multiple monitors
+
+The risk here is not that a second display fails to appear — it is that a click
+computed on one monitor lands on another, silently. `SendInput` takes
+normalised coordinates over the *virtual* screen, so the arithmetic depends on
+an origin that is `(0,0)` in the common layout and negative as soon as a
+monitor sits left of or above the primary. That second case is the one worth
+proving, and it cannot be reached by plugging a monitor in on the right.
+
+Both were tested by pointing wincrust at text **painted with GDI**, which has
+no UI Automation node, so `act` could not resolve it through the tree and had
+to use the coordinate path. The harness window recorded the screen point it
+actually received, making the check independent of anything wincrust reports
+about itself:
+
+| layout | virtual origin | wincrust aimed at | window received | |
+|---|---|---|---|---|
+| second display right | (0,0) | (2270, 319) | (2270, 319) | exact |
+| second display **left** | **(-1920,0)** | (-1570, 319) | (-1570, 319) | exact |
+
+Both resolved `resolved_by: "ocr"`, confirming the coordinate path was
+exercised rather than the control-pattern shortcut, which involves no
+coordinates at all and would have proved nothing.
+
+Not covered: displays at **different scale factors**. Scaling is verified at
+100/125/150/175% on a single display, and mixed-DPI across two monitors is a
+distinct case ([#5](https://github.com/nhatvu148/wincrust/issues/5) tracked the
+plain geometry, which is now closed).
 
 ### Localised labels
 
