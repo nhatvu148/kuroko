@@ -9,7 +9,7 @@
 
 use anyhow::{anyhow, Result};
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::sync::mpsc::{self, Sender};
 use tokio::sync::oneshot;
 
@@ -113,17 +113,67 @@ pub struct DiscoverArgs {
 pub struct ActResult {
     pub ok: bool,
     pub action: String,
-    /// `ok` | `identity_changed` | `moved` | `disabled` | `pattern_gone` | `not_found`
+    /// `ok` | `identity_changed` | `moved` | `disabled` | `pattern_gone` |
+    /// `not_found` | `ambiguous`
     pub status: String,
+    /// How the element was located: "path" or "selector".
+    pub resolved_by: String,
     pub target: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
     pub elapsed_ms: f64,
 }
 
+/// Identify an element by what it is rather than where it sat.
+///
+/// A child-index path is the fastest way to reach an element and the most
+/// fragile: expand a tree node between `discover` and `act` and every index
+/// after it shifts. The generation guard catches that and refuses, which is
+/// correct but is still a failure. A selector is resolved against the live
+/// tree, so the same reshape is survivable.
+///
+/// Deliberately a struct rather than a query language. XPath is an ergonomic
+/// for a human writing a test script; for a caller assembling a request it is
+/// a string that must be built correctly with no feedback until it fails,
+/// where these fields are checked by the schema.
+#[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
+pub struct Selector {
+    /// Exact, case-insensitive.
+    pub name: Option<String>,
+    /// Exact, case-sensitive - automation ids are identifiers, not labels.
+    pub automation_id: Option<String>,
+    /// As reported by `discover`, e.g. "button", "menu item".
+    pub control_type: Option<String>,
+}
+
+impl Selector {
+    pub fn is_empty(&self) -> bool {
+        self.name.is_none() && self.automation_id.is_none() && self.control_type.is_none()
+    }
+
+    pub fn describe(&self) -> String {
+        let mut parts = Vec::new();
+        if let Some(n) = &self.name {
+            parts.push(format!("name={n:?}"));
+        }
+        if let Some(a) = &self.automation_id {
+            parts.push(format!("automation_id={a:?}"));
+        }
+        if let Some(c) = &self.control_type {
+            parts.push(format!("control_type={c:?}"));
+        }
+        parts.join(" ")
+    }
+}
+
 pub struct ActArgs {
     pub scope: String,
+    /// Child-index path from `discover`. Fast, and exact while the tree is
+    /// unchanged.
     pub path: Vec<u32>,
+    /// Resolved at act-time instead of trusting the path. Takes precedence
+    /// when present.
+    pub select: Option<Selector>,
     pub action: String,
     pub value: Option<String>,
 }
@@ -231,3 +281,44 @@ impl Engine {
 // end would take down the COM thread every other session shares. The thread
 // already stops on its own - `rx.recv()` returns Err once the last Sender is
 // dropped, which is exactly the "no owners left" condition wanted.
+
+#[cfg(test)]
+mod selector_tests {
+    use super::*;
+
+    #[test]
+    fn empty_selector_is_recognised() {
+        assert!(Selector::default().is_empty());
+        assert!(!Selector {
+            name: Some("Save".into()),
+            ..Default::default()
+        }
+        .is_empty());
+    }
+
+    /// The description ends up in an `ambiguous` or `not_found` message, which
+    /// is the caller's only clue about what to narrow.
+    #[test]
+    fn describes_every_field_it_was_given() {
+        let s = Selector {
+            name: Some("Save".into()),
+            automation_id: Some("btnSave".into()),
+            control_type: Some("button".into()),
+        };
+        let d = s.describe();
+        assert!(
+            d.contains("Save") && d.contains("btnSave") && d.contains("button"),
+            "{d}"
+        );
+    }
+
+    #[test]
+    fn describes_only_what_was_set() {
+        let d = Selector {
+            control_type: Some("button".into()),
+            ..Default::default()
+        }
+        .describe();
+        assert_eq!(d, "control_type=\"button\"");
+    }
+}

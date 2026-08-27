@@ -95,9 +95,18 @@ enum Command {
     Act {
         #[arg(long)]
         scope: String,
-        /// Comma-separated child-index path, e.g. "1,0,0,0,1".
-        #[arg(long)]
+        /// Comma-separated child-index path, e.g. "1,0,0,0,1". Fast, and exact
+        /// while the tree is unchanged.
+        #[arg(long, default_value = "")]
         path: String,
+        /// Resolve by name instead of position. Survives a tree reshape that a
+        /// path does not.
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        automation_id: Option<String>,
+        #[arg(long)]
+        control_type: Option<String>,
         #[arg(long)]
         action: String,
         #[arg(long)]
@@ -275,6 +284,9 @@ async fn main() -> Result<()> {
         Command::Act {
             scope,
             path,
+            name,
+            automation_id,
+            control_type,
             action,
             value,
         } => {
@@ -283,10 +295,21 @@ async fn main() -> Result<()> {
                 .filter(|s| !s.trim().is_empty())
                 .map(|s| s.trim().parse())
                 .collect::<std::result::Result<_, _>>()?;
+            let select = uia::Selector {
+                name,
+                automation_id,
+                control_type,
+            };
+            let select = (!select.is_empty()).then_some(select);
+            anyhow::ensure!(
+                !path.is_empty() || select.is_some(),
+                "give --path or at least one of --name / --automation-id / --control-type"
+            );
             let r = engine
                 .act(uia::ActArgs {
                     scope,
                     path,
+                    select,
                     action,
                     value,
                 })
