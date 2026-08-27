@@ -3,7 +3,7 @@
 
 use super::{
     ActArgs, ActResult, Bounds, Cmd, DiscoverArgs, Discovery, EngineConfig, Entity, Filter,
-    WindowInfo,
+    Selector, WindowInfo,
 };
 use crate::lease::{now, Scope};
 use anyhow::{anyhow, Result};
@@ -403,12 +403,13 @@ fn generation_of(w: &WindowInfo) -> u64 {
 }
 
 macro_rules! guard {
-    ($status:expr, $action:expr, $target:expr, $t0:expr, $detail:expr) => {
+    ($status:expr, $action:expr, $target:expr, $t0:expr, $detail:expr, $by:expr) => {
         return Ok(ActResult {
             ok: false,
             action: $action.to_string(),
             status: $status.to_string(),
             target: $target,
+            resolved_by: $by.to_string(),
             detail: Some($detail),
             elapsed_ms: $t0.elapsed().as_secs_f64() * 1000.0,
         })
@@ -425,6 +426,10 @@ macro_rules! guard {
 fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
     let t0 = std::time::Instant::now();
     let scope = Scope::decode(&args.scope, key)?;
+    let by = match &args.select {
+        Some(s) if !s.is_empty() => "selector",
+        _ => "path",
+    };
 
     unsafe {
         let hwnd = HWND(scope.hwnd as *mut core::ffi::c_void);
@@ -434,7 +439,8 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
                 args.action,
                 String::new(),
                 t0,
-                "the window no longer exists".to_string()
+                "the window no longer exists".to_string(),
+                by
             );
         }
 
@@ -443,10 +449,18 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
         // 174 elements, a Subtree cache pulls all 174 to reach one of them, which
         // is what made act as expensive as a full discover.
         let nav = a.CreateCacheRequest()?;
-        // Element AND Children: Children alone caches the kids but leaves the
-        // node's own properties empty, which silently breaks the generation
-        // check (the guard caught this, as designed).
-        nav.SetTreeScope(TreeScope(TreeScope_Element.0 | TreeScope_Children.0))?;
+        // A path walk needs one level at a time; a selector needs the whole
+        // subtree to search. Paying for the subtree only when asked keeps the
+        // fast route fast - which is why `path` remains supported at all.
+        //
+        // Element AND Children, not Children alone: Children caches the kids
+        // but leaves the node's own properties empty, which silently breaks the
+        // generation check (a guard caught this, as designed).
+        nav.SetTreeScope(if by == "selector" {
+            TreeScope_Subtree
+        } else {
+            TreeScope(TreeScope_Element.0 | TreeScope_Children.0)
+        })?;
         nav.SetTreeFilter(&a.ControlViewCondition()?)?;
         for prop in [
             UIA_NamePropertyId,
@@ -512,43 +526,85 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
                 win.name,
                 t0,
                 "window was replaced, retitled or resized since discovery - re-discover"
-                    .to_string()
+                    .to_string(),
+                by
             );
         }
 
         // Guard 2: does the path still lead somewhere?
         let mut el = cached.clone();
-        let last = args.path.len().saturating_sub(1);
-        for (i, idx) in args.path.iter().enumerate() {
-            let kids = match el.GetCachedChildren() {
-                Ok(k) => k,
-                Err(_) => guard!(
+
+        if by == "selector" {
+            let sel = args.select.as_ref().expect("selector present");
+            let mut hits: Vec<(IUIAutomationElement, String)> = Vec::new();
+            collect_matches(&cached, sel, &mut hits)?;
+            match hits.len() {
+                0 => guard!(
                     "not_found",
                     args.action,
-                    win.name,
+                    win.name.clone(),
                     t0,
-                    format!("path ran out of children at depth {i}")
+                    format!("nothing in this window matches {}", sel.describe()),
+                    by
                 ),
-            };
-            if *idx >= kids.Length().unwrap_or(0) as u32 {
-                guard!(
-                    "not_found",
-                    args.action,
-                    win.name,
-                    t0,
-                    format!("path index {idx} out of range at depth {i}")
-                );
+                1 => {}
+                n => {
+                    // Never guess. Two matching buttons means the caller was not
+                    // specific enough, and quietly taking the first is precisely
+                    // how automation clicks the wrong thing.
+                    let names: Vec<&str> = hits.iter().take(4).map(|(_, n)| n.as_str()).collect();
+                    guard!(
+                        "ambiguous",
+                        args.action,
+                        win.name.clone(),
+                        t0,
+                        format!(
+                            "{n} elements match {} ({}). Add automation_id or control_type.",
+                            sel.describe(),
+                            names.join(", ")
+                        ),
+                        by
+                    )
+                }
             }
-            let child = kids.GetElement(*idx as i32)?;
-            // Re-cache as we descend: the child arrived with only its own
-            // properties, so it needs its own children before the next step -
-            // and the leaf needs patterns instead.
-            el = if i == last {
-                child.BuildUpdatedCache(&leaf)?
-            } else {
-                child.BuildUpdatedCache(&nav)?
-            };
+            let found = hits.remove(0).0;
+            el = found.BuildUpdatedCache(&leaf)?;
+        } else {
+            let last = args.path.len().saturating_sub(1);
+            for (i, idx) in args.path.iter().enumerate() {
+                let kids = match el.GetCachedChildren() {
+                    Ok(k) => k,
+                    Err(_) => guard!(
+                        "not_found",
+                        args.action,
+                        win.name,
+                        t0,
+                        format!("path ran out of children at depth {i}"),
+                        by
+                    ),
+                };
+                if *idx >= kids.Length().unwrap_or(0) as u32 {
+                    guard!(
+                        "not_found",
+                        args.action,
+                        win.name,
+                        t0,
+                        format!("path index {idx} out of range at depth {i}"),
+                        by
+                    );
+                }
+                let child = kids.GetElement(*idx as i32)?;
+                // Re-cache as we descend: the child arrived with only its own
+                // properties, so it needs its own children before the next step -
+                // and the leaf needs patterns instead.
+                el = if i == last {
+                    child.BuildUpdatedCache(&leaf)?
+                } else {
+                    child.BuildUpdatedCache(&nav)?
+                };
+            }
         }
+
         let target = el.CachedName().map(|b| b.to_string()).unwrap_or_default();
 
         // Guard 3: is it in a state where acting makes sense?
@@ -558,7 +614,8 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
                 args.action,
                 target,
                 t0,
-                "control is disabled".to_string()
+                "control is disabled".to_string(),
+                by
             );
         }
         if el.CachedIsOffscreen().map(|b| b.as_bool()).unwrap_or(false) {
@@ -567,7 +624,8 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
                 args.action,
                 target,
                 t0,
-                "control is offscreen".to_string()
+                "control is offscreen".to_string(),
+                by
             );
         }
 
@@ -599,7 +657,8 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
                 args.action,
                 target,
                 t0,
-                format!("unknown action '{other}'")
+                format!("unknown action '{other}'"),
+                by
             ),
         };
 
@@ -609,23 +668,71 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
                 args.action,
                 target,
                 t0,
-                format!("control no longer supports '{}'", args.action)
+                format!("control no longer supports '{}'", args.action),
+                by
             ),
             Ok(Err(e)) => guard!(
                 "pattern_gone",
                 args.action,
                 target,
                 t0,
-                format!("pattern call failed: {e}")
+                format!("pattern call failed: {e}"),
+                by
             ),
             Ok(Ok(detail)) => Ok(ActResult {
                 ok: true,
                 action: args.action.clone(),
                 status: "ok".to_string(),
                 target,
+                resolved_by: by.to_string(),
                 detail: Some(detail),
                 elapsed_ms: t0.elapsed().as_secs_f64() * 1000.0,
             }),
         }
     }
+}
+
+/// Depth-first search for every element matching a selector.
+///
+/// Collects all matches rather than stopping at the first, because the count is
+/// the interesting part: one is a hit, several means the caller must be more
+/// specific, and returning early would hide that.
+unsafe fn collect_matches(
+    el: &IUIAutomationElement,
+    sel: &Selector,
+    out: &mut Vec<(IUIAutomationElement, String)>,
+) -> Result<()> {
+    // A cap, because a runaway tree should degrade into "ambiguous" rather than
+    // spending a minute proving it.
+    if out.len() >= 64 {
+        return Ok(());
+    }
+    let name = el.CachedName().map(|b| b.to_string()).unwrap_or_default();
+    let aid = el
+        .CachedAutomationId()
+        .map(|b| b.to_string())
+        .unwrap_or_default();
+    let ct = control_type_name(el.CachedControlType().unwrap_or(UIA_CONTROLTYPE_ID(0)));
+
+    // Name is compared case-insensitively because it is a display label;
+    // automation_id is not, because it is an identifier.
+    let ok = sel
+        .name
+        .as_ref()
+        .is_none_or(|n| n.eq_ignore_ascii_case(name.trim()))
+        && sel.automation_id.as_ref().is_none_or(|a| *a == aid)
+        && sel
+            .control_type
+            .as_ref()
+            .is_none_or(|c| c.eq_ignore_ascii_case(&ct));
+    if ok {
+        out.push((el.clone(), name));
+    }
+
+    if let Ok(kids) = el.GetCachedChildren() {
+        for i in 0..kids.Length().unwrap_or(0) {
+            collect_matches(&kids.GetElement(i)?, sel, out)?;
+        }
+    }
+    Ok(())
 }
