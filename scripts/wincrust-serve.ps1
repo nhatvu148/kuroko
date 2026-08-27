@@ -204,6 +204,28 @@ if ($Uninstall) {
     return
 }
 
+# --- elevation ---------------------------------------------------------------
+
+# Checked before the install, because `cargo install` takes minutes and finding
+# out afterwards is the expensive way to learn this. Registering a task with
+# -RunLevel Highest needs an admin token; that flag is what clears UIPI, which
+# is what lets the server act on elevated windows at all.
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$elevated = (New-Object Security.Principal.WindowsPrincipal($identity)).IsInRole(
+    [Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $elevated) {
+    Write-Host 'This needs an elevated PowerShell.' -ForegroundColor Yellow
+    Write-Host ''
+    Write-Host '  The scheduled task is registered with -RunLevel Highest, which Windows will'
+    Write-Host '  not let a non-elevated process create. That flag is not optional: it is what'
+    Write-Host '  clears UIPI, and without it the server cannot act on elevated windows.'
+    Write-Host ''
+    Write-Host '  Open PowerShell as Administrator and run this again.'
+    Write-Host ''
+    Write-Host '  Only setup needs it. -Status, -Logs, -Start and -Stop do not.'
+    exit 1
+}
+
 # --- the binary -------------------------------------------------------------
 
 if (-not $SkipInstall) {
@@ -257,7 +279,22 @@ if (Test-Path $KeyFile) {
     $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
     try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
     $key = [Convert]::ToBase64String($bytes)
-    Set-Content -Path $KeyFile -Value $key -NoNewline -Encoding ASCII
+    try {
+        Set-Content -Path $KeyFile -Value $key -NoNewline -Encoding ASCII -ErrorAction Stop
+    } catch {
+        # The usual cause is a leftover key written by the elevated scheduled
+        # task, which a non-elevated run cannot overwrite. Say that, rather
+        # than leaving an UnauthorizedAccessException to be interpreted.
+        Write-Host ''
+        Write-Warn "Cannot write $KeyFile"
+        Write-Warn $_.Exception.Message
+        Write-Host ''
+        Write-Host '  Usually a leftover file from a previous elevated run. Clear it and retry:'
+        Write-Host "    .\scripts\wincrust-serve.ps1 -Uninstall"
+        Write-Host "    Remove-Item -Recurse -Force `"$Dir`""
+        Write-Host '  If that also says access denied, run it from an elevated PowerShell once.'
+        exit 1
+    }
 }
 
 # --- the launcher -----------------------------------------------------------
@@ -272,7 +309,14 @@ $launcherBody = @"
 `$env:RUST_LOG = "info"
 & "$Exe" serve --transport http --host $ListenIp --port $Port --ip-allowlist $allow *>> "$LogFile"
 "@
-Set-Content -Path $Launcher -Value $launcherBody -Encoding UTF8
+try {
+    Set-Content -Path $Launcher -Value $launcherBody -Encoding UTF8 -ErrorAction Stop
+} catch {
+    Write-Warn "Cannot write $Launcher"
+    Write-Warn $_.Exception.Message
+    Write-Host "  Clear the directory and retry: Remove-Item -Recurse -Force `"$Dir`""
+    exit 1
+}
 
 # --- the task ---------------------------------------------------------------
 

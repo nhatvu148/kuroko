@@ -45,6 +45,11 @@ machine running the agent and a Windows box running the desktop.
 
 Two things have to be true on the Windows side, and neither is obvious.
 
+Run the setup from an **elevated** PowerShell. Registering a task with
+`-RunLevel Highest` needs an admin token, and that flag is what clears UIPI -
+without it the server cannot act on elevated windows, which is half the point.
+Day-to-day status, logs, start and stop need no elevation.
+
 There is a script in the repo that does all of it -
 [`scripts/wincrust-serve.ps1`](scripts/wincrust-serve.ps1), or `task setup
 CLIENT_IP=<your-client-tailscale-ip>` if you use [Task](https://taskfile.dev).
