@@ -411,6 +411,9 @@ macro_rules! guard {
             target: $target,
             resolved_by: $by.to_string(),
             detail: Some($detail),
+            // The UIA path has real perception guards; this field exists for
+            // the coordinate path, which has none.
+            screen_changed: None,
             elapsed_ms: $t0.elapsed().as_secs_f64() * 1000.0,
         })
     };
@@ -690,6 +693,7 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
                 status: "ok".to_string(),
                 target,
                 resolved_by: by.to_string(),
+                screen_changed: None,
                 detail: Some(detail),
                 elapsed_ms: t0.elapsed().as_secs_f64() * 1000.0,
             }),

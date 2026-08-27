@@ -59,6 +59,36 @@ pub struct Observation {
 /// image at all - by far the cheapest useful answer during a wait loop.
 static LAST: Mutex<Option<Frame>> = Mutex::new(None);
 
+/// Is the interactive desktop reachable, or is the session locked?
+///
+/// `OpenInputDesktop` fails when the workstation is locked or a secure desktop
+/// is up. Worth checking before a capture, because the alternative is worse
+/// than an error: a locked session captures the lock-screen wallpaper, which is
+/// a perfectly valid image containing no application at all. OCR then returns
+/// zero lines and UIA returns nothing useful, and a caller has no way to tell
+/// that from "the app has no text" - which is exactly the confusion this cost
+/// an hour of debugging.
+#[cfg(windows)]
+pub fn session_is_locked() -> bool {
+    use windows::Win32::System::StationsAndDesktops::{
+        CloseDesktop, OpenInputDesktop, DESKTOP_CONTROL_FLAGS, DESKTOP_READOBJECTS,
+    };
+    unsafe {
+        match OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_READOBJECTS) {
+            Ok(h) => {
+                let _ = CloseDesktop(h);
+                false
+            }
+            Err(_) => true,
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn session_is_locked() -> bool {
+    false
+}
+
 #[cfg(windows)]
 pub fn grab() -> Result<Frame> {
     unsafe {
@@ -71,6 +101,12 @@ pub fn grab() -> Result<Frame> {
         if w <= 0 || h <= 0 {
             return Err(anyhow!(
                 "virtual screen is {w}x{h} - almost certainly running in session 0, which has no desktop"
+            ));
+        }
+        if session_is_locked() {
+            return Err(anyhow!(
+                "the session is locked - a capture here returns the lock screen, not the desktop. \
+                 Unlock the machine, or expect UIA and OCR to see nothing."
             ));
         }
 
@@ -503,6 +539,33 @@ pub fn frame_from_png(path: &std::path::Path) -> Result<Frame> {
         origin: (0, 0),
         rgb: img.into_raw(),
     })
+}
+
+/// Compare two captures. `None` when nothing moved.
+///
+/// Separate from the stateful `diff` mode, which owns a single previous frame
+/// globally: this compares two frames a caller holds, which is what verifying
+/// one specific action requires.
+pub fn compare_frames(a: &Frame, b: &Frame) -> Option<ChangedRegion> {
+    changed_box(a, b, 12).map(|(x, y, w, h, fraction, pixels)| ChangedRegion {
+        x: b.origin.0 + x as i32,
+        y: b.origin.1 + y as i32,
+        w,
+        h,
+        fraction,
+        pixels,
+    })
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ChangedRegion {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+    /// Share of the frame that differs, 0.0..1.0.
+    pub fraction: f64,
+    pub pixels: u64,
 }
 
 /// Crop exposed for the OCR region-of-interest path.

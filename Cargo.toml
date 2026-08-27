@@ -58,7 +58,11 @@ windows = { version = "0.62.2", features = [
   "Win32_Graphics_Gdi",
   "Win32_Security",
   "Win32_Security_Authorization",
+  "Win32_System_StationsAndDesktops",
   "Win32_UI_HiDpi",
+  # SendInput, for the OCR fallback path only - every other action goes
+  # through a UIA control pattern.
+  "Win32_UI_Input_KeyboardAndMouse",
   # OCR comes from the OS. Windows.Media.Ocr ships with Windows, returns
   # word-level bounding boxes, and costs nothing in binary size - bundling
   # Tesseract or an ONNX model would undo the single-binary property that is

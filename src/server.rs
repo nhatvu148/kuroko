@@ -42,6 +42,16 @@ pub struct ActParams {
     /// path does not - prefer it when anything may have changed since
     /// `discover`. Ambiguity is an error, so be specific.
     pub select: Option<uia::Selector>,
+    /// Fall back to OCR when the selector finds nothing in the UI tree.
+    ///
+    /// Off by default, and that is deliberate. An OCR hit is a rectangle, not
+    /// a control: there is no pattern to invoke, so acting on one means moving
+    /// the real cursor and clicking whatever is topmost at that point. That
+    /// gives up every guarantee the pattern path provides. Turn it on only for
+    /// applications that draw their own interface and expose no tree - the
+    /// result will say `resolved_by: "ocr"` when this path was taken.
+    #[serde(default)]
+    pub allow_ocr: bool,
     /// click | type | toggle | expand | select
     pub action: String,
     /// Text, for `type`.
@@ -137,17 +147,32 @@ impl Wincrust {
         if guard::engaged() {
             return Err(McpError::internal_error(guard::refusal(), None));
         }
-        self.engine
+        let select = p.select.filter(|s| !s.is_empty());
+        let ocr_query = p
+            .allow_ocr
+            .then(|| select.as_ref().and_then(|s| s.name.clone()))
+            .flatten();
+
+        let r = self
+            .engine
             .act(uia::ActArgs {
                 scope: p.scope,
                 path: p.path,
-                select: p.select.filter(|s| !s.is_empty()),
-                action: p.action,
+                select,
+                action: p.action.clone(),
                 value: p.value,
             })
             .await
-            .map(Json)
-            .map_err(|e| McpError::internal_error(e.to_string(), None))
+            .map_err(|e| McpError::internal_error(e.to_string(), None))?;
+
+        // Only `not_found` falls through. `ambiguous` means the tree DID have
+        // matches and the caller must narrow; `identity_changed` means the world
+        // moved and a fresh discover is the right answer. Retrying either with
+        // OCR would paper over a condition the caller needs to see.
+        match ocr_query {
+            Some(q) if r.status == "not_found" => Ok(Json(ocr_fallback(&q, &p.action, r).await)),
+            _ => Ok(Json(r)),
+        }
     }
 
     #[tool(
@@ -437,3 +462,145 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     }
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
+
+/// Second attempt for an application that exposes no UI tree.
+///
+/// Kept out of the UIA engine on purpose: this path never touches COM, and
+/// folding it into the act state machine would blur the line between "acted on
+/// a control" and "clicked a pixel" - a distinction the caller has to be able
+/// to see in the result.
+async fn ocr_fallback(query: &str, action: &str, mut r: uia::ActResult) -> uia::ActResult {
+    let t0 = std::time::Instant::now();
+    let q = query.to_string();
+    let found = tokio::task::spawn_blocking(move || {
+        ocr::find_text(ocr::FindArgs {
+            query: Some(&q),
+            max_matches: 8,
+            hwnd: None,
+            scale: 0.0,
+            image: None,
+            prep: crate::capture::Prep::None,
+        })
+    })
+    .await;
+
+    let mut fail = |status: &str, detail: String| -> uia::ActResult {
+        r.ok = false;
+        r.status = status.to_string();
+        r.resolved_by = "ocr".into();
+        r.detail = Some(detail);
+        r.screen_changed = None;
+        r.elapsed_ms += t0.elapsed().as_secs_f64() * 1000.0;
+        r.clone()
+    };
+
+    let res = match found {
+        Ok(Ok(res)) => res,
+        Ok(Err(e)) => {
+            return fail(
+                "not_found",
+                format!("not in the UI tree, and OCR failed: {e}"),
+            )
+        }
+        Err(e) => return fail("not_found", format!("OCR task failed: {e}")),
+    };
+    match res.matches.len() {
+        0 => {
+            return fail(
+                "not_found",
+                format!(
+                    "{query:?} is neither in the UI tree nor on screen ({} lines read)",
+                    res.lines_seen
+                ),
+            )
+        }
+        1 => {}
+        n => {
+            return fail(
+                "ambiguous",
+                format!(
+                    "{query:?} appears {n} times on screen. OCR cannot disambiguate by role - \
+                     narrow the query or use a UI-tree selector."
+                ),
+            )
+        }
+    }
+    if action != "click" {
+        return fail(
+            "pattern_gone",
+            format!(
+                "OCR found {query:?} but only \"click\" is possible on a screen-read target - \
+                     there is no control pattern to perform {action:?}"
+            ),
+        );
+    }
+
+    let m = &res.matches[0];
+    let (x, y) = m.click_at;
+    // Re-checked immediately before the input, not only at entry: OCR takes
+    // hundreds of milliseconds, which is long enough for someone to reach for
+    // the corner precisely because they want this to stop.
+    if guard::engaged() {
+        return fail("stopped", guard::refusal());
+    }
+    // Baseline taken as late as possible, so the comparison afterwards reflects
+    // the click and not whatever the screen was doing during OCR.
+    let before = tokio::task::spawn_blocking(crate::capture::grab)
+        .await
+        .ok()
+        .and_then(|r| r.ok());
+
+    if let Err(e) = crate::input::click_at(x, y) {
+        return fail(
+            "error",
+            format!("OCR found {query:?} at ({x},{y}) but the click failed: {e}"),
+        );
+    }
+
+    // The UIA path gets perception guards - window identity, bounds, enabled
+    // state. A coordinate click gets none of that, so the nearest available
+    // evidence is what the screen did next. Long enough for a repaint, short
+    // enough not to catch an unrelated animation.
+    tokio::time::sleep(std::time::Duration::from_millis(SETTLE_MS)).await;
+    let changed = match before {
+        Some(b) => tokio::task::spawn_blocking(crate::capture::grab)
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .and_then(|a| crate::capture::compare_frames(&b, &a)),
+        None => None,
+    };
+
+    let note = match &changed {
+        Some(c) => format!(
+            "the screen then changed over {:.2}% of its area at ({},{}) {}x{}",
+            c.fraction * 100.0,
+            c.x,
+            c.y,
+            c.w,
+            c.h
+        ),
+        None => "the screen did NOT change afterwards - the click most likely missed, though a \
+                 control already in the requested state would look the same"
+            .to_string(),
+    };
+
+    uia::ActResult {
+        ok: true,
+        action: action.to_string(),
+        status: "ok".into(),
+        target: m.text.clone(),
+        resolved_by: "ocr".into(),
+        detail: Some(format!(
+            "not in the UI tree; clicked the screen at ({x},{y}) where OCR read {:?}. \
+             No control pattern was involved, so this reports that the click was sent, \
+             not that the application handled it - {note}.",
+            m.text
+        )),
+        screen_changed: changed,
+        elapsed_ms: r.elapsed_ms + t0.elapsed().as_secs_f64() * 1000.0,
+    }
+}
+
+/// How long to wait between a coordinate click and the confirming capture.
+const SETTLE_MS: u64 = 250;

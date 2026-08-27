@@ -31,6 +31,7 @@ required. The reason is what elevation does to the cost of a large dependency tr
 | `act` | click / type / toggle / expand / select, via UIA control patterns |
 | `observe` | `text` \| `image` \| `diff` |
 | `find_text` | OCR the screen, return text with coordinates — for apps with no UI tree |
+| `act` + `allow_ocr` | when the UI tree has no match, click what OCR read instead (opt-in) |
 | `launch` | allowlist-only; fails closed |
 
 No shell, no registry, no filesystem, no arbitrary process spawn. Use SSH for those — it does not
@@ -120,6 +121,9 @@ tested scaling — and a DPI-unaware build looks entirely healthy at 100%.
 
 - Apps that draw their own UI expose no tree. Abaqus/CAE returns six elements, all window chrome.
   `find_text` is the fallback: OCR via `Windows.Media.Ocr`, returning text with screen coordinates.
+  `act` can act on that too, with `allow_ocr` — off by default, because an OCR hit is a rectangle
+  rather than a control, so acting means synthetic input at coordinates with none of the guarantees
+  a control pattern gives. The result says `resolved_by: "ocr"` when that path was taken.
   It reads **15 of 15** Abaqus model-tree labels. Small dense text still degrades: Abaqus's menu bar
   sits at 6/9 words and **magnification does not move it** — upscaling helps when the recogniser's
   minimum feature size is the constraint, not when the source raster never captured the detail.

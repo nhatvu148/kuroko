@@ -1,6 +1,7 @@
 mod capture;
 mod dpi;
 mod guard;
+mod input;
 mod lease;
 mod ocr;
 mod server;
