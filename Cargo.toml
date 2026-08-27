@@ -3,7 +3,7 @@ name = "wincrust"
 version = "0.2.0"
 edition = "2021"
 description = "Windows desktop automation over MCP. Pure Rust, single binary, seven tools, no shell."
-license = "MIT"
+license = "MIT OR Apache-2.0"
 repository = "https://github.com/nhatvu148/wincrust"
 readme = "README.md"
 authors = ["Nhat Vu <nhatvu148@gmail.com>"]
@@ -23,7 +23,7 @@ rust-version = "1.96"
 # cannot protect against a file nobody thought of - a dry run of this crate with
 # `exclude` happily packaged three desktop screenshots left behind by a manual
 # `observe --out` test.
-include = ["src/**/*.rs", "Cargo.toml", "README.md", "LICENSE"]
+include = ["src/**/*.rs", "Cargo.toml", "README.md", "LICENSE-MIT", "LICENSE-APACHE"]
 
 # docs.rs builds on x86_64-unknown-linux-gnu by default. Every Windows API this
 # crate is built on is absent there, so the docs build would fail and crates.io

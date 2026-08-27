@@ -1,9 +1,27 @@
-# wincrust
+# wincrust 🦀
 
-Windows desktop automation over MCP. Pure Rust, single binary, ~6 MB.
+**Windows desktop automation over MCP — pure Rust, one 7 MB binary, seven tools, no shell.**
+
+[![License: MIT OR Apache-2.0](https://img.shields.io/crates/l/wincrust.svg)](#licence)
+[![crates.io](https://img.shields.io/crates/v/wincrust.svg)](https://crates.io/crates/wincrust)
+[![rust](https://img.shields.io/badge/rust-1.96%2B-orange.svg)](https://www.rust-lang.org/)
+[![ci](https://github.com/nhatvu148/wincrust/actions/workflows/ci.yml/badge.svg)](https://github.com/nhatvu148/wincrust/actions/workflows/ci.yml)
+
+Let an agent see and drive a Windows desktop: enumerate windows, read a window's
+UI Automation tree, click and type through control patterns, wait for a control
+to appear, and read the screen with OCR when an application has no tree at all.
+It runs elevated, so it reaches windows a normal process cannot.
 
 **win** for the platform, **crust** for the language — it contains *rust*, and
 crustacean is where *Rustacean* comes from.
+
+```bash
+cargo install wincrust
+```
+
+Driving it from another machine takes two more steps — see
+[below](#driving-it-from-another-machine). Already running? Start with
+[docs/USING.md](docs/USING.md).
 
 ## Why
 
@@ -124,6 +142,15 @@ Three refusals are worth recognising, because they look alike from the client:
 | `401` | the token is wrong or absent |
 | `403` | the source address is not in `--ip-allowlist`, **or** the `Host` header is not the address the server was told to bind |
 | empty window list, no error | the server is running in session 0 - it is not on a desktop |
+
+## Where to look next
+
+| | |
+|---|---|
+| [docs/USING.md](docs/USING.md) | what to ask it, how to read a result, and **when to use SSH instead** |
+| [skills/wincrust](skills/wincrust/SKILL.md) | the same judgement as a Claude Code skill — `cp -r skills/wincrust ~/.claude/skills/` |
+| [scripts/wincrust-serve.ps1](scripts/wincrust-serve.ps1) | install, key, scheduled task, start — `task setup CLIENT_IP=<ip>` |
+| [What is actually verified](#what-is-actually-verified) | measured on hardware, and what is still untested |
 
 ## Design
 
@@ -323,3 +350,22 @@ Design informed by, but not derived from:
 [desktop-touch-mcp](https://github.com/Harusame64/desktop-touch-mcp) (MIT) — leases and per-action
 perception guards; [Windows-MCP](https://github.com/CursorTouch/Windows-MCP) (MIT) — tool surface and
 the session-1 install pattern. No code from either is reused.
+
+## Licence
+
+Dual-licensed under either of
+
+- Apache License, Version 2.0 ([LICENSE-APACHE](LICENSE-APACHE) or
+  <https://www.apache.org/licenses/LICENSE-2.0>)
+- MIT licence ([LICENSE-MIT](LICENSE-MIT) or <https://opensource.org/licenses/MIT>)
+
+at your option. This is the conventional pairing for Rust crates: Apache-2.0
+carries an explicit patent grant, MIT is the simpler and more permissive of the
+two, and offering both lets a consumer pick whichever their own licensing
+already accommodates.
+
+Versions up to and including 0.2.0 were published under MIT alone; the dual
+licence applies from the next release onward.
+
+Unless you state otherwise, any contribution you submit for inclusion shall be
+dual-licensed as above, with no additional terms.
