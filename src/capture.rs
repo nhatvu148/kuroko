@@ -319,13 +319,6 @@ pub fn observe_bytes(diff: bool, max_width: u32) -> Result<(Observation, Vec<u8>
     Ok((obs, png))
 }
 
-/// Native-resolution PNG. OCR needs this rather than the downscaled image the
-/// observe path produces: every coordinate it returns is in image space, so
-/// shrinking the input first would shrink every answer with it.
-pub fn encode_png_native(f: &Frame) -> Result<Vec<u8>> {
-    encode_png(f, 0).map(|(png, _, _, _)| png)
-}
-
 /// Magnified PNG for recognition, and **the scale actually applied**.
 ///
 /// Returning the effective scale is the point. A caller has to divide the
