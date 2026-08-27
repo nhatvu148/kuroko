@@ -44,7 +44,6 @@ it, how to read what `act` gives back, and - more useful than either - when to
 use SSH instead. [skills/wincrust](skills/wincrust/SKILL.md) is the same
 judgement as a Claude Code skill: `cp -r skills/wincrust ~/.claude/skills/`.
 
-
 The server has to run on Windows, because it drives a Windows desktop. The
 client does not: this is the arrangement it was built for, a Mac or Linux
 machine running the agent and a Windows box running the desktop.
