@@ -94,8 +94,47 @@ x86_64, a single 1920x1080 display at origin (0,0), en-US.
 | lease signing, diff heuristics, stop state machine | unit tested (21 tests) |
 | **display scaling** | verified at **100%, 125%, 150% and 175%** — see below |
 | **multiple monitors** | **NOT verified** — no second display available. Negative-origin handling is unit tested only ([#5](https://github.com/nhatvu148/wincrust/issues/5)) |
-| Windows 10, Server, ARM64 | not tested ([#6](https://github.com/nhatvu148/wincrust/issues/6)) |
-| non-English locale | not tested, and the most likely of these to actually break: `App`-by-name matches **localised** UIA `Name` values ([#6](https://github.com/nhatvu148/wincrust/issues/6)) |
+| **non-English labels** | **verified** against a real UIA tree carrying Japanese, German, Vietnamese and full-width labels — see below |
+| ARM64 | cross-compiles in CI (`aarch64-pc-windows-msvc`); never run, and never on an ARM64 host |
+| Windows 10 | not tested ([#6](https://github.com/nhatvu148/wincrust/issues/6)) |
+| Windows Server | **out of scope.** Some configurations have no interactive desktop at all, and this crate requires one |
+
+### Localised labels
+
+Name matching is tiered, tightest first — `exact`, `case`, `normalized`,
+`affix` — and a search keeps only its best tier, so leniency can never turn a
+selector that used to resolve one element into `ambiguous`. Every result
+reports which tier it used as `matched_by`.
+
+Verified against a Win32 window built with genuinely localised control labels.
+`toggle` asks a control for a pattern it does not have, so each probe resolves
+the selector, reports its tier, and changes nothing:
+
+| probe | selector | status | `matched_by` |
+|---|---|---|---|
+| Japanese menu, verbatim | `ファイル(F)` | `pattern_gone` | `exact` |
+| Japanese menu, mnemonic dropped | `ファイル` | `pattern_gone` | `affix` |
+| German | `öffnen` vs `Öffnen` | `pattern_gone` | `case` |
+| Vietnamese, composed | `Tệp thử` (NFC) | `pattern_gone` | `exact` |
+| Vietnamese, decomposed | `Tệp thử` (NFD) | `pattern_gone` | `normalized` |
+| full-width label, ASCII query | `Full` vs `Ｆｕｌｌ` | `pattern_gone` | `normalized` |
+| disabled control | `Disabled Item` | `disabled` | `exact` |
+| **`Save` beside `SAVE`** | `Save` | `pattern_gone` | `exact` |
+| absent | — | `not_found` | — |
+
+The NFD row is the one that matters in practice: macOS emits NFD and Windows
+reports NFC, so a name typed on a Mac driving a Windows box could never have
+compared equal. The `Save`/`SAVE` row is the safety property — it resolves to
+**one** element rather than reporting two.
+
+What this does **not** cover is a localised Windows *install*. The labels are
+real and so is the UIA tree, but the OS is en-US; a German or Japanese Windows
+end to end remains untested ([#6](https://github.com/nhatvu148/wincrust/issues/6)).
+
+OCR carries the same ladder plus a loosest rung for glyphs the recogniser
+confuses, and its language is selectable: the engine otherwise follows the
+*user profile*, which returns confident nonsense when profile and application
+disagree. Every response lists `available_languages`.
 
 ### Display scaling
 

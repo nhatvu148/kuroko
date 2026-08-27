@@ -1,10 +1,16 @@
 //! The MCP surface.
 //!
-//! Five tools, and deliberately no sixth. This process runs at High integrity
-//! and is reachable over the network, so every tool is attack surface: there is
-//! no shell, no registry, no filesystem, no arbitrary process spawn. Anything
-//! outside "look at the desktop and act on a control" belongs on the SSH side,
-//! where it is not running with an admin token.
+//! Six tools, and deliberately nothing that generalises. This process runs at
+//! High integrity and is reachable over the network, so every tool is attack
+//! surface: there is no shell, no registry, no filesystem, and no way to run an
+//! arbitrary command - `launch` starts only what the host's allowlist names, by
+//! exact match. Anything outside "look at the desktop and act on a control"
+//! belongs on the SSH side, where it is not running with an admin token.
+//!
+//! The count is incidental; the rule is that a tool earns its place by being
+//! narrow. `launch` was the sixth because starting a named application cannot
+//! be expressed as looking at the desktop, not because the surface was open to
+//! growth.
 
 use crate::{capture, guard, ocr, uia};
 use rmcp::handler::server::wrapper::{Json, Parameters};
