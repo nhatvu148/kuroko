@@ -59,6 +59,36 @@ pub struct Observation {
 /// image at all - by far the cheapest useful answer during a wait loop.
 static LAST: Mutex<Option<Frame>> = Mutex::new(None);
 
+/// Is the interactive desktop reachable, or is the session locked?
+///
+/// `OpenInputDesktop` fails when the workstation is locked or a secure desktop
+/// is up. Worth checking before a capture, because the alternative is worse
+/// than an error: a locked session captures the lock-screen wallpaper, which is
+/// a perfectly valid image containing no application at all. OCR then returns
+/// zero lines and UIA returns nothing useful, and a caller has no way to tell
+/// that from "the app has no text" - which is exactly the confusion this cost
+/// an hour of debugging.
+#[cfg(windows)]
+pub fn session_is_locked() -> bool {
+    use windows::Win32::System::StationsAndDesktops::{
+        CloseDesktop, OpenInputDesktop, DESKTOP_CONTROL_FLAGS, DESKTOP_READOBJECTS,
+    };
+    unsafe {
+        match OpenInputDesktop(DESKTOP_CONTROL_FLAGS(0), false, DESKTOP_READOBJECTS) {
+            Ok(h) => {
+                let _ = CloseDesktop(h);
+                false
+            }
+            Err(_) => true,
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn session_is_locked() -> bool {
+    false
+}
+
 #[cfg(windows)]
 pub fn grab() -> Result<Frame> {
     unsafe {
@@ -71,6 +101,12 @@ pub fn grab() -> Result<Frame> {
         if w <= 0 || h <= 0 {
             return Err(anyhow!(
                 "virtual screen is {w}x{h} - almost certainly running in session 0, which has no desktop"
+            ));
+        }
+        if session_is_locked() {
+            return Err(anyhow!(
+                "the session is locked - a capture here returns the lock screen, not the desktop. \
+                 Unlock the machine, or expect UIA and OCR to see nothing."
             ));
         }
 
