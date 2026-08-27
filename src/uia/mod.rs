@@ -114,10 +114,23 @@ pub struct ActResult {
     pub ok: bool,
     pub action: String,
     /// `ok` | `identity_changed` | `moved` | `disabled` | `pattern_gone` |
-    /// `not_found` | `ambiguous`
+    /// `not_found` | `ambiguous` | `error` | `stopped`
+    ///
+    /// `not_found` means the target genuinely is not there; `error` means the
+    /// lookup itself failed and says nothing about the target. A caller that
+    /// retries on one should not retry on the other.
     pub status: String,
-    /// How the element was located: "path" or "selector".
+    /// How the element was located: "path", "selector" or "ocr".
     pub resolved_by: String,
+    /// Only on the OCR path, and only for a click that was actually sent.
+    ///
+    /// A control pattern is a contract with the control; a coordinate click is
+    /// a hope about geometry. This is the nearest thing to evidence available:
+    /// what the screen did immediately afterwards. `fraction: 0.0` means the
+    /// click landed somewhere that did nothing visible - which usually means it
+    /// missed, but can also mean the control was already in that state.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub screen_changed: Option<crate::capture::ChangedRegion>,
     pub target: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,

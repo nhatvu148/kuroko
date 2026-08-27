@@ -489,6 +489,7 @@ async fn ocr_fallback(query: &str, action: &str, mut r: uia::ActResult) -> uia::
         r.status = status.to_string();
         r.resolved_by = "ocr".into();
         r.detail = Some(detail);
+        r.screen_changed = None;
         r.elapsed_ms += t0.elapsed().as_secs_f64() * 1000.0;
         r.clone()
     };
@@ -540,26 +541,66 @@ async fn ocr_fallback(query: &str, action: &str, mut r: uia::ActResult) -> uia::
     // hundreds of milliseconds, which is long enough for someone to reach for
     // the corner precisely because they want this to stop.
     if guard::engaged() {
-        return fail("not_found", guard::refusal());
+        return fail("stopped", guard::refusal());
     }
-    match crate::input::click_at(x, y) {
-        Ok(()) => uia::ActResult {
-            ok: true,
-            action: action.to_string(),
-            status: "ok".into(),
-            target: m.text.clone(),
-            resolved_by: "ocr".into(),
-            detail: Some(format!(
-                "not in the UI tree; clicked the screen at ({x},{y}) where OCR read {:?}. \
-                 No control pattern was involved, so success here means the click was sent, \
-                 not that the application acted on it.",
-                m.text
-            )),
-            elapsed_ms: r.elapsed_ms + t0.elapsed().as_secs_f64() * 1000.0,
-        },
-        Err(e) => fail(
-            "not_found",
+    // Baseline taken as late as possible, so the comparison afterwards reflects
+    // the click and not whatever the screen was doing during OCR.
+    let before = tokio::task::spawn_blocking(crate::capture::grab)
+        .await
+        .ok()
+        .and_then(|r| r.ok());
+
+    if let Err(e) = crate::input::click_at(x, y) {
+        return fail(
+            "error",
             format!("OCR found {query:?} at ({x},{y}) but the click failed: {e}"),
+        );
+    }
+
+    // The UIA path gets perception guards - window identity, bounds, enabled
+    // state. A coordinate click gets none of that, so the nearest available
+    // evidence is what the screen did next. Long enough for a repaint, short
+    // enough not to catch an unrelated animation.
+    tokio::time::sleep(std::time::Duration::from_millis(SETTLE_MS)).await;
+    let changed = match before {
+        Some(b) => tokio::task::spawn_blocking(crate::capture::grab)
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .and_then(|a| crate::capture::compare_frames(&b, &a)),
+        None => None,
+    };
+
+    let note = match &changed {
+        Some(c) => format!(
+            "the screen then changed over {:.2}% of its area at ({},{}) {}x{}",
+            c.fraction * 100.0,
+            c.x,
+            c.y,
+            c.w,
+            c.h
         ),
+        None => "the screen did NOT change afterwards - the click most likely missed, though a \
+                 control already in the requested state would look the same"
+            .to_string(),
+    };
+
+    uia::ActResult {
+        ok: true,
+        action: action.to_string(),
+        status: "ok".into(),
+        target: m.text.clone(),
+        resolved_by: "ocr".into(),
+        detail: Some(format!(
+            "not in the UI tree; clicked the screen at ({x},{y}) where OCR read {:?}. \
+             No control pattern was involved, so this reports that the click was sent, \
+             not that the application handled it - {note}.",
+            m.text
+        )),
+        screen_changed: changed,
+        elapsed_ms: r.elapsed_ms + t0.elapsed().as_secs_f64() * 1000.0,
     }
 }
+
+/// How long to wait between a coordinate click and the confirming capture.
+const SETTLE_MS: u64 = 250;

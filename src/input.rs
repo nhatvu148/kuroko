@@ -18,6 +18,18 @@
 
 use anyhow::{anyhow, Result};
 
+/// Map a screen coordinate into `SendInput`'s normalised 0..65535 space.
+///
+/// Deliberately a free function rather than a closure inside the unsafe block:
+/// it is the only arithmetic here that can be wrong in a way nothing catches,
+/// and it is the single place multi-monitor geometry is handled anywhere in
+/// this crate. `origin` is negative when a monitor sits left of or above the
+/// primary, which is exactly the case no hardware here can exercise - so it is
+/// tested instead.
+pub(crate) fn to_normalized(v: i32, origin: i32, span: i32) -> i32 {
+    (((v - origin) as f64) * 65535.0 / ((span - 1).max(1) as f64)).round() as i32
+}
+
 /// Click once at a screen coordinate.
 ///
 /// `SendInput` with `MOUSEEVENTF_ABSOLUTE` addresses the *virtual desktop* in a
@@ -53,10 +65,7 @@ pub fn click_at(x: i32, y: i32) -> Result<()> {
             ));
         }
 
-        let norm = |v: i32, origin: i32, span: i32| -> i32 {
-            (((v - origin) as f64) * 65535.0 / ((span - 1).max(1) as f64)).round() as i32
-        };
-        let (nx, ny) = (norm(x, vx, vw), norm(y, vy, vh));
+        let (nx, ny) = (to_normalized(x, vx, vw), to_normalized(y, vy, vh));
 
         let mk = |flags| INPUT {
             r#type: INPUT_MOUSE,
@@ -93,4 +102,52 @@ pub fn click_at(x: i32, y: i32) -> Result<()> {
 #[cfg(not(windows))]
 pub fn click_at(_x: i32, _y: i32) -> Result<()> {
     Err(anyhow!("synthetic input requires Windows"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::to_normalized;
+
+    #[test]
+    fn maps_the_span_to_the_full_range() {
+        assert_eq!(to_normalized(0, 0, 1920), 0);
+        assert_eq!(to_normalized(1919, 0, 1920), 65535);
+    }
+
+    /// The case no display here can produce: a monitor left of the primary puts
+    /// the virtual-screen origin at a negative x, and a point on it is negative
+    /// too. Both must still land inside 0..65535.
+    #[test]
+    fn handles_a_negative_virtual_origin() {
+        // Two 1920-wide monitors, secondary on the left: origin -1920, span 3840.
+        assert_eq!(to_normalized(-1920, -1920, 3840), 0);
+        assert_eq!(to_normalized(1919, -1920, 3840), 65535);
+        // The primary's left edge sits halfway across the virtual desktop.
+        let mid = to_normalized(0, -1920, 3840);
+        assert!((32750..=32790).contains(&mid), "midpoint was {mid}");
+    }
+
+    #[test]
+    fn handles_a_negative_origin_on_the_y_axis() {
+        // A monitor above the primary.
+        assert_eq!(to_normalized(-1080, -1080, 2160), 0);
+        assert_eq!(to_normalized(1079, -1080, 2160), 65535);
+    }
+
+    /// A degenerate span must not divide by zero.
+    #[test]
+    fn survives_a_one_pixel_span() {
+        assert_eq!(to_normalized(0, 0, 1), 0);
+        assert_eq!(to_normalized(0, 0, 0), 0);
+    }
+
+    #[test]
+    fn is_monotonic_across_the_span() {
+        let mut last = i32::MIN;
+        for x in (-1920..1920).step_by(97) {
+            let n = to_normalized(x, -1920, 3840);
+            assert!(n > last, "not monotonic at {x}");
+            last = n;
+        }
+    }
 }

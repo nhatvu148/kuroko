@@ -541,6 +541,33 @@ pub fn frame_from_png(path: &std::path::Path) -> Result<Frame> {
     })
 }
 
+/// Compare two captures. `None` when nothing moved.
+///
+/// Separate from the stateful `diff` mode, which owns a single previous frame
+/// globally: this compares two frames a caller holds, which is what verifying
+/// one specific action requires.
+pub fn compare_frames(a: &Frame, b: &Frame) -> Option<ChangedRegion> {
+    changed_box(a, b, 12).map(|(x, y, w, h, fraction, pixels)| ChangedRegion {
+        x: b.origin.0 + x as i32,
+        y: b.origin.1 + y as i32,
+        w,
+        h,
+        fraction,
+        pixels,
+    })
+}
+
+#[derive(Debug, Clone, Serialize, JsonSchema)]
+pub struct ChangedRegion {
+    pub x: i32,
+    pub y: i32,
+    pub w: u32,
+    pub h: u32,
+    /// Share of the frame that differs, 0.0..1.0.
+    pub fraction: f64,
+    pub pixels: u64,
+}
+
 /// Crop exposed for the OCR region-of-interest path.
 pub fn crop_frame(f: &Frame, x: u32, y: u32, w: u32, h: u32) -> Frame {
     crop(f, x, y, w, h)
