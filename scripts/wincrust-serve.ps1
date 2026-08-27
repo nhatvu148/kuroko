@@ -424,7 +424,9 @@ if (Test-Path $AllowFile) {
 if ($allowCount -eq 0) {
     # Said out loud because the failure is otherwise discovered mid-task, when
     # `launch` refuses and the caller falls back to Start-Process.
-    Write-Warn "launch allowlist is empty - `launch` will refuse every application."
+    # Single-quoted: in a double-quoted string a backtick is the escape
+    # character, so the quoting marks around `launch` were being eaten.
+    Write-Warn 'launch allowlist is empty - `launch` will refuse every application.'
     Write-Warn "  Re-run with -Allow notepad,someapp  (or edit $AllowFile)"
 } else {
     Write-Host "  launch allowlist: $allowCount entr$(if ($allowCount -eq 1) { 'y' } else { 'ies' })" -ForegroundColor Green
