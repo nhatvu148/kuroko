@@ -90,11 +90,13 @@ pub struct ObserveParams {
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct WaitResult {
     pub ok: bool,
-    /// `ok` | `timeout` | `error`
+    /// `ok` | `timeout` | `ambiguous`
     ///
     /// `timeout` means the condition never held and says nothing about why -
-    /// the target may be absent, or merely slow. `error` means a poll itself
-    /// failed.
+    /// the target may be absent, or merely slow, or the window may have been
+    /// unwalkable throughout; `detail` distinguishes those. `ambiguous` means
+    /// the condition held for more than one element, so there is no single
+    /// scope to hand back.
     pub status: String,
     /// The condition that was waited on, echoed back.
     pub until: String,
@@ -344,6 +346,9 @@ impl Wincrust {
         let poll = std::time::Duration::from_millis(p.poll_ms.unwrap_or(250).max(50));
 
         let mut polls: u32 = 0;
+        // Kept so a timeout can say whether the polls were failing or merely
+        // not matching - two very different things to be told after 30 s.
+        let mut last_err: Option<String> = None;
         loop {
             polls += 1;
             let elapsed = || t0.elapsed().as_secs_f64() * 1000.0;
@@ -362,6 +367,12 @@ impl Wincrust {
 
             match outcome {
                 Ok(d) => {
+                    // A poll succeeded, so an earlier transient failure is no
+                    // longer the story - clearing it keeps the timeout message
+                    // from blaming a walk that has since recovered.
+                    if last_err.is_some() {
+                        last_err = None;
+                    }
                     let mut hits: Vec<(uia::Entity, crate::text::MatchTier)> = d
                         .entities
                         .iter()
@@ -369,11 +380,43 @@ impl Wincrust {
                         .collect();
                     crate::text::keep_best(&mut hits, |h| h.1);
 
-                    let hit = match until.as_str() {
-                        "appears" => hits.first().cloned(),
-                        "enabled" => hits.iter().find(|(e, _)| e.enabled).cloned(),
-                        _ => None,
-                    };
+                    // `act` refuses when a selector matches more than one
+                    // element, because quietly taking the first is how
+                    // automation clicks the wrong thing. A `wait_for` that
+                    // hands back one of several would launder that same guess
+                    // into the very scope the caller then acts on.
+                    let candidates: Vec<&(uia::Entity, crate::text::MatchTier)> =
+                        match until.as_str() {
+                            "appears" => hits.iter().collect(),
+                            "enabled" => hits.iter().filter(|(e, _)| e.enabled).collect(),
+                            _ => Vec::new(),
+                        };
+                    if candidates.len() > 1 {
+                        let names: Vec<&str> = candidates
+                            .iter()
+                            .take(4)
+                            .map(|(e, _)| e.name.as_str())
+                            .collect();
+                        return Ok(Json(WaitResult {
+                            ok: false,
+                            status: "ambiguous".into(),
+                            until,
+                            polls,
+                            elapsed_ms: elapsed(),
+                            scope: None,
+                            matched: None,
+                            matched_by: None,
+                            detail: Some(format!(
+                                "{} elements satisfy {} ({}). Narrow with automation_id or \
+                                 control_type - returning one of them would hand you a scope \
+                                 pointing at an arbitrary choice.",
+                                candidates.len(),
+                                p.select.describe(),
+                                names.join(", ")
+                            )),
+                        }));
+                    }
+                    let hit = candidates.first().map(|(e, t)| (e.clone(), *t));
                     if until == "disappears" && hits.is_empty() {
                         return Ok(Json(WaitResult {
                             ok: true,
@@ -403,8 +446,7 @@ impl Wincrust {
                 }
                 Err(e) => {
                     // A window that vanishes mid-wait is a legitimate way for
-                    // `disappears` to be satisfied, so a failed walk ends the
-                    // wait successfully there and is fatal everywhere else.
+                    // `disappears` to be satisfied.
                     if until == "disappears" {
                         return Ok(Json(WaitResult {
                             ok: true,
@@ -420,17 +462,12 @@ impl Wincrust {
                             )),
                         }));
                     }
-                    return Ok(Json(WaitResult {
-                        ok: false,
-                        status: "error".into(),
-                        until,
-                        polls,
-                        elapsed_ms: elapsed(),
-                        scope: None,
-                        matched: None,
-                        matched_by: None,
-                        detail: Some(format!("the window could not be walked: {e}")),
-                    }));
+                    // Everywhere else this is a RETRY, not a failure. A window
+                    // being walked while it opens, loads or swaps a dialog is
+                    // exactly when a walk fails transiently - and exactly when
+                    // someone is waiting on it. Giving up on the first error
+                    // would abandon the wait at its most likely moment.
+                    last_err = Some(e.to_string());
                 }
             }
 
@@ -444,11 +481,19 @@ impl Wincrust {
                     scope: None,
                     matched: None,
                     matched_by: None,
-                    detail: Some(format!(
-                        "nothing satisfied `{until}` for {} within {} ms",
-                        p.select.describe(),
-                        timeout.as_millis()
-                    )),
+                    detail: Some(match &last_err {
+                        Some(e) => format!(
+                            "nothing satisfied `{until}` for {} within {} ms; the last poll also \
+                             failed to walk the window: {e}",
+                            p.select.describe(),
+                            timeout.as_millis()
+                        ),
+                        None => format!(
+                            "nothing satisfied `{until}` for {} within {} ms",
+                            p.select.describe(),
+                            timeout.as_millis()
+                        ),
+                    }),
                 }));
             }
             tokio::time::sleep(poll).await;

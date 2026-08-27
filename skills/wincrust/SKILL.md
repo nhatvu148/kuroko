@@ -82,7 +82,7 @@ Do not report success from `ok: true` alone.
   re-`discover` or try OCR.
 - **`error`** - the lookup itself failed and says nothing about the target.
   Retrying is reasonable.
-- **`ambiguous`** - more than one match. **Never pick one.** The tool refused
+- **`ambiguous`** - more than one match, from `act` or `wait_for`. **Never pick one.** The tool refused
   on purpose; quietly taking the first is how automation clicks the wrong
   thing. Report the candidates and ask, or narrow with `automation_id` or
   `control_type`.

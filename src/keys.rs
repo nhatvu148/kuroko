@@ -30,6 +30,8 @@ pub const VK_RIGHT: u16 = 0x27;
 pub const VK_DOWN: u16 = 0x28;
 pub const VK_DELETE: u16 = 0x2E;
 pub const VK_LWIN: u16 = 0x5B;
+pub const VK_OEM_PLUS: u16 = 0xBB;
+pub const VK_OEM_MINUS: u16 = 0xBD;
 pub const VK_F1: u16 = 0x70;
 
 /// One keystroke: zero or more held modifiers plus the key they modify.
@@ -80,6 +82,10 @@ fn named(k: &str) -> Option<u16> {
         "down" => VK_DOWN,
         "left" => VK_LEFT,
         "right" => VK_RIGHT,
+        // Ctrl++ and Ctrl+- are real shortcuts (zoom), so the keys they name
+        // have to exist before the parser can claim to support them.
+        "plus" | "+" => VK_OEM_PLUS,
+        "minus" | "-" => VK_OEM_MINUS,
         other => {
             // F1-F24 are contiguous from VK_F1.
             let n: u8 = other.strip_prefix('f')?.parse().ok()?;
@@ -105,18 +111,28 @@ pub fn parse_chord(spec: &str) -> Result<Chord> {
         win: false,
         key: 0,
     };
-    // Split on '+', but a trailing '+' is the plus key itself rather than a
-    // dangling separator: "Ctrl++" must mean ctrl and plus.
-    let parts: Vec<&str> = if spec.ends_with('+') && spec.len() > 1 {
-        let mut p: Vec<&str> = spec[..spec.len() - 1].split('+').collect();
-        p.push("+");
-        p
+    // Only a DOUBLED trailing '+' is the plus key: "Ctrl++" means ctrl and
+    // plus, while "Ctrl+" is a dangling separator and almost certainly a typo.
+    // Reading the second as ctrl-plus would turn a mistake into a keystroke.
+    // A bare "+" is the plus key on its own.
+    let (mods_str, key_str) = if spec == "+" {
+        ("", "+")
+    } else if let Some(head) = spec.strip_suffix("++") {
+        (head, "+")
     } else {
-        spec.split('+').collect()
+        match spec.rsplit_once('+') {
+            Some((m, k)) => (m, k),
+            None => ("", spec),
+        }
     };
-
-    let (mods, key) = parts.split_at(parts.len() - 1);
-    for m in mods {
+    // An entirely empty modifier section means there were none. An empty
+    // segment *within* one is still an error, so "Ctrl++Shift" is refused.
+    let mods: Vec<&str> = if mods_str.trim().is_empty() {
+        Vec::new()
+    } else {
+        mods_str.split('+').collect()
+    };
+    for m in &mods {
         match m.trim().to_ascii_lowercase().as_str() {
             "ctrl" | "control" => c.ctrl = true,
             "shift" => c.shift = true,
@@ -126,7 +142,7 @@ pub fn parse_chord(spec: &str) -> Result<Chord> {
             other => return Err(anyhow!("unknown modifier {other:?} in {spec:?}")),
         }
     }
-    let k = key[0].trim();
+    let k = key_str.trim();
     if k.is_empty() {
         return Err(anyhow!("{spec:?} has modifiers but no key"));
     }
@@ -216,10 +232,33 @@ mod tests {
 
     #[test]
     fn a_trailing_plus_is_the_plus_key_not_a_dangling_separator() {
-        // "Ctrl++" is how you say ctrl-plus, and the naive split gives an
-        // empty final segment instead.
-        let c = parse_chord("Ctrl++");
-        assert!(c.is_err() || c.unwrap().ctrl, "must not silently mis-parse");
+        // "Ctrl++" is how you say ctrl-plus, and a naive split leaves an empty
+        // final segment that reads as an empty modifier instead.
+        //
+        // The previous version of this test asserted `is_err() || ok`, which
+        // is true of every possible outcome - a guard against mis-parsing that
+        // could not detect mis-parsing. It now asserts the actual behaviour.
+        let c = parse_chord("Ctrl++").expect("Ctrl++ must parse");
+        assert!(c.ctrl);
+        assert_eq!(c.key, VK_OEM_PLUS);
+
+        let bare = parse_chord("+").expect("+ alone must parse");
+        assert!(!bare.ctrl && !bare.shift && !bare.alt && !bare.win);
+        assert_eq!(bare.key, VK_OEM_PLUS);
+
+        assert_eq!(parse_chord("Ctrl+-").unwrap().key, VK_OEM_MINUS);
+        assert_eq!(key_of("plus"), VK_OEM_PLUS);
+
+        // A SINGLE trailing '+' stays an error: "Ctrl+" is a typo far more
+        // often than it is an intent, and reading it as ctrl-plus would turn
+        // a mistake into a keystroke.
+        assert!(parse_chord("Ctrl+").is_err());
+    }
+
+    #[test]
+    fn an_empty_segment_inside_the_modifiers_is_still_refused() {
+        // Tolerating the trailing '+' must not tolerate "Ctrl++Shift".
+        assert!(parse_chord("Ctrl++Shift").is_err());
     }
 
     #[test]
