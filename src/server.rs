@@ -86,6 +86,26 @@ pub struct ObserveParams {
     pub max_width: Option<u32>,
 }
 
+/// What `launch` did, and what a caller needs to find the result.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct LaunchResult {
+    /// The name as it was allowlisted and passed to Windows.
+    pub launched: String,
+    /// Top-level window handles that ALREADY existed when this ran.
+    ///
+    /// `launched` means the process was started - not that it is running, and
+    /// not that a window exists. A heavy application can take a minute to put
+    /// one up, and some never do.
+    ///
+    /// Poll `windows` afterwards and take the handle that is NOT in this list.
+    /// That is the only reliable way to tell a new instance from one already
+    /// open: two instances of the same application share a title and a class
+    /// name and differ only by handle, so waiting on the wrong one waits
+    /// forever on something that was never going to change.
+    pub existing_windows: Vec<isize>,
+    pub detail: String,
+}
+
 /// What `wait_for` observed.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct WaitResult {
@@ -539,12 +559,14 @@ impl Wincrust {
                        ALSO be one Windows can resolve - on PATH, or registered under App Paths - \
                        otherwise give the full path to the .exe. Being allowlisted and being \
                        resolvable are two separate things, and passing the first says nothing \
-                       about the second."
+                       about the second. Returns the windows that existed beforehand: `launched` \
+                       means started, NOT running, so poll `windows` afterwards and take the \
+                       handle that is not among them."
     )]
     async fn launch(
         &self,
         Parameters(p): Parameters<LaunchParams>,
-    ) -> Result<Json<serde_json::Value>, McpError> {
+    ) -> Result<Json<LaunchResult>, McpError> {
         if guard::engaged() {
             return Err(McpError::internal_error(guard::refusal(), None));
         }
@@ -562,11 +584,36 @@ impl Wincrust {
                 None,
             ));
         }
+        // Snapshot before starting. `cmd /C start` returns as soon as it has
+        // handed off, so the pid it yields is the shell's and tells a caller
+        // nothing; what a caller actually needs is a way to recognise the
+        // window that appears later. Two instances of one application are
+        // identical in title and class, so "not in this list" is the only
+        // thing that distinguishes them.
+        let existing_windows: Vec<isize> = self
+            .engine
+            .list_windows()
+            .await
+            .map(|ws| ws.into_iter().map(|w| w.hwnd).collect())
+            .unwrap_or_default();
+
         std::process::Command::new("cmd")
             .args(["/C", "start", "", &p.name])
             .spawn()
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-        Ok(Json(serde_json::json!({ "launched": p.name })))
+
+        Ok(Json(LaunchResult {
+            launched: p.name.clone(),
+            detail: format!(
+                "started - which is not the same as running. {} top-level window(s) existed \
+                 beforehand and are listed in `existing_windows`; poll `windows` and take the \
+                 handle that is not among them. A heavy application can take a minute, and two \
+                 instances of one application share a title and a class name, so the handle is \
+                 the only thing that tells them apart.",
+                existing_windows.len()
+            ),
+            existing_windows,
+        }))
     }
 }
 
