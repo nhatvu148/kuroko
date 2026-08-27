@@ -64,6 +64,9 @@ enum Command {
         /// OCR this PNG instead of the screen, for reproducible measurement.
         #[arg(long)]
         image: Option<std::path::PathBuf>,
+        /// Pixel preparation: none | gray | contrast | otsu | sharpen.
+        #[arg(long, default_value = "none")]
+        preprocess: capture::Prep,
     },
     /// List displays with their bounds and real scale factors.
     Displays,
@@ -197,6 +200,7 @@ async fn main() -> Result<()> {
             hwnd,
             scale,
             image,
+            preprocess,
         } => {
             let r = tokio::task::spawn_blocking(move || {
                 ocr::find_text(ocr::FindArgs {
@@ -205,6 +209,7 @@ async fn main() -> Result<()> {
                     hwnd,
                     scale,
                     image: image.as_deref(),
+                    prep: preprocess,
                 })
             })
             .await??;

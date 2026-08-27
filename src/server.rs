@@ -226,6 +226,7 @@ impl Wincrust {
                 hwnd,
                 scale: 0.0,
                 image: None,
+                prep: crate::capture::Prep::None,
             })
         })
         .await
