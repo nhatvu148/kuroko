@@ -86,6 +86,33 @@ pub struct ObserveParams {
     pub max_width: Option<u32>,
 }
 
+/// What `launch` did, and what a caller needs to find the result.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct LaunchResult {
+    /// The name as it was allowlisted and passed to Windows.
+    pub launched: String,
+    /// Top-level window handles that ALREADY existed when this ran, or `null`
+    /// if they could not be enumerated.
+    ///
+    /// `null` and `[]` are not the same claim and must not be conflated: an
+    /// empty list says the desktop had no top-level windows, while `null` says
+    /// this call does not know. A caller that diffs against a wrongly-empty
+    /// list treats every window it finds as new, which is precisely the
+    /// mistake this field exists to prevent.
+    ///
+    /// `launched` means the process was started - not that it is running, and
+    /// not that a window exists. A heavy application can take a minute to put
+    /// one up, and some never do.
+    ///
+    /// Poll `windows` afterwards and take the handle that is NOT in this list.
+    /// That is the only reliable way to tell a new instance from one already
+    /// open: two instances of the same application share a title and a class
+    /// name and differ only by handle, so waiting on the wrong one waits
+    /// forever on something that was never going to change.
+    pub existing_windows: Option<Vec<isize>>,
+    pub detail: String,
+}
+
 /// What `wait_for` observed.
 #[derive(Debug, Serialize, JsonSchema)]
 pub struct WaitResult {
@@ -539,12 +566,14 @@ impl Wincrust {
                        ALSO be one Windows can resolve - on PATH, or registered under App Paths - \
                        otherwise give the full path to the .exe. Being allowlisted and being \
                        resolvable are two separate things, and passing the first says nothing \
-                       about the second."
+                       about the second. Returns the windows that existed beforehand: `launched` \
+                       means started, NOT running, so poll `windows` afterwards and take the \
+                       handle that is not among them."
     )]
     async fn launch(
         &self,
         Parameters(p): Parameters<LaunchParams>,
-    ) -> Result<Json<serde_json::Value>, McpError> {
+    ) -> Result<Json<LaunchResult>, McpError> {
         if guard::engaged() {
             return Err(McpError::internal_error(guard::refusal(), None));
         }
@@ -562,11 +591,49 @@ impl Wincrust {
                 None,
             ));
         }
+        // Snapshot before starting. `cmd /C start` returns as soon as it has
+        // handed off, so the pid it yields is the shell's and tells a caller
+        // nothing; what a caller actually needs is a way to recognise the
+        // window that appears later. Two instances of one application are
+        // identical in title and class, so "not in this list" is the only
+        // thing that distinguishes them.
+        let snapshot = self.engine.list_windows().await;
+        let snapshot_err = snapshot.as_ref().err().map(|e| e.to_string());
+        let existing_windows: Option<Vec<isize>> = snapshot
+            .ok()
+            .map(|ws| ws.into_iter().map(|w| w.hwnd).collect());
+
         std::process::Command::new("cmd")
             .args(["/C", "start", "", &p.name])
             .spawn()
             .map_err(|e| McpError::internal_error(e.to_string(), None))?;
-        Ok(Json(serde_json::json!({ "launched": p.name })))
+
+        let detail = match (&existing_windows, &snapshot_err) {
+            (Some(w), _) => format!(
+                "started - which is not the same as running. {} top-level window(s) existed \
+                 beforehand and are listed in `existing_windows`; poll `windows` and take the \
+                 handle that is not among them. A heavy application can take a minute, and two \
+                 instances of one application share a title and a class name, so the handle is \
+                 the only thing that tells them apart.",
+                w.len()
+            ),
+            // Reported rather than defaulted to empty: an empty list would
+            // claim the desktop was bare and make every window found
+            // afterwards look new. The launch still happened, so this reports
+            // it and withholds the part it cannot vouch for.
+            (None, Some(e)) => format!(
+                "started - which is not the same as running. The windows open beforehand could \
+                 NOT be enumerated ({e}), so `existing_windows` is null rather than empty and \
+                 there is no way here to tell a new window from one already open. Call \
+                 `windows` and compare against what you knew before."
+            ),
+            (None, None) => "started - which is not the same as running.".to_string(),
+        };
+        Ok(Json(LaunchResult {
+            launched: p.name.clone(),
+            detail,
+            existing_windows,
+        }))
     }
 }
 

@@ -61,11 +61,17 @@ pub(super) fn run(rx: Receiver<Cmd>, ready: Sender<Result<()>>, cfg: EngineConfi
 
     while let Ok(cmd) = rx.recv() {
         match cmd {
+            // Reads retry; `act` deliberately does not. Retrying a read costs
+            // a few hundred milliseconds, while retrying an action that has
+            // already sent input could click twice - and a caller cannot tell
+            // a doubled click from a single one afterwards.
             Cmd::ListWindows(reply) => {
-                let _ = reply.send(list_windows(&automation));
+                let _ = reply.send(retry_transient(|| list_windows(&automation)));
             }
             Cmd::Discover(args, reply) => {
-                let _ = reply.send(discover(&automation, &args, &cfg.lease_key));
+                let _ = reply.send(retry_transient(|| {
+                    discover(&automation, &args, &cfg.lease_key)
+                }));
             }
             Cmd::Act(args, reply) => {
                 let _ = reply.send(act(&automation, &args, &cfg.lease_key));
@@ -441,6 +447,58 @@ unsafe fn fresh_scope(a: &IUIAutomation, hwnd: HWND, key: &[u8]) -> Option<Strin
     }
     .encode(key)
     .ok()
+}
+
+/// HRESULTs that mean "try again", not "this cannot work".
+///
+/// `EVENT_E_ALL_SUBSCRIBERS_FAILED` (0x80040201) shows up while an application
+/// is starting and UI Automation is registering and unregistering event
+/// handlers underneath us. It was observed on a plain window enumeration that
+/// takes no handle at all, so it cannot be blamed on a stale one: the call is
+/// simply unlucky in its timing.
+///
+/// The rest are the usual COM apartment transients - a server busy, a call
+/// rejected, an element that went away mid-walk.
+fn is_transient(e: &windows::core::Error) -> bool {
+    matches!(
+        e.code().0 as u32,
+        0x8004_0201 // EVENT_E_ALL_SUBSCRIBERS_FAILED
+            | 0x8001_010A // RPC_E_SERVERCALL_RETRYLATER
+            | 0x8001_0001 // RPC_E_CALL_REJECTED
+            | 0x8004_0200 // EVENT_E_FIRST / element vanished mid-walk
+    )
+}
+
+/// Runs a READ and retries it through a transient COM failure.
+///
+/// Three attempts with a short pause: the observed failure recovered on the
+/// very next call, so this is about surviving a moment rather than waiting out
+/// a condition. Anything still failing after that is reported as it is - a
+/// retry loop that hides a real fault is worse than the raw error it replaced.
+fn retry_transient<T>(mut f: impl FnMut() -> Result<T>) -> Result<T> {
+    const ATTEMPTS: u32 = 3;
+    let mut last = None;
+    for attempt in 0..ATTEMPTS {
+        match f() {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                let transient = e
+                    .downcast_ref::<windows::core::Error>()
+                    .is_some_and(is_transient);
+                if !transient {
+                    return Err(e);
+                }
+                tracing::warn!("transient COM failure on attempt {}: {e}", attempt + 1);
+                last = Some(e);
+                // No pause after the last attempt - there is nothing left to
+                // wait for, and it would only delay the error by 120 ms.
+                if attempt + 1 < ATTEMPTS {
+                    std::thread::sleep(std::time::Duration::from_millis(120));
+                }
+            }
+        }
+    }
+    Err(last.expect("a failure was recorded before the loop ended"))
 }
 
 /// Cheap fingerprint of a window's identity. `act` compares this against the
