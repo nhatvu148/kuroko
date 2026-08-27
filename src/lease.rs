@@ -28,7 +28,12 @@ type HmacSha256 = Hmac<Sha256>;
 /// Leases are deliberately short-lived: a desktop changes under you, and an
 /// hour-old handle is far more likely to point at something else than at what
 /// the caller meant.
-pub const DEFAULT_TTL_SECS: u64 = 60;
+// Raised from 60 after field use: a scope is bound to hwnd AND generation, so
+// it self-invalidates the moment the window is retitled, resized or replaced -
+// the TTL is a backstop, not the guard. Sixty seconds forced a re-discovery
+// (400-500 ms on a heavy app) before nearly every act, which bought no safety
+// the generation hash was not already providing.
+pub const DEFAULT_TTL_SECS: u64 = 300;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Scope {

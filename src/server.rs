@@ -1,6 +1,6 @@
 //! The MCP surface.
 //!
-//! Six tools, and deliberately nothing that generalises. This process runs at
+//! Seven tools, and deliberately nothing that generalises. This process runs at
 //! High integrity and is reachable over the network, so every tool is attack
 //! surface: there is no shell, no registry, no filesystem, and no way to run an
 //! arbitrary command - `launch` starts only what the host's allowlist names, by
@@ -8,9 +8,10 @@
 //! belongs on the SSH side, where it is not running with an admin token.
 //!
 //! The count is incidental; the rule is that a tool earns its place by being
-//! narrow. `launch` was the sixth because starting a named application cannot
-//! be expressed as looking at the desktop, not because the surface was open to
-//! growth.
+//! narrow. `launch` earned one because starting a named application cannot be
+//! expressed as looking at the desktop; `wait_for` earned one because polling
+//! `discover` from outside costs a round trip per attempt and races whatever
+//! it is waiting for. Neither widened what the server can reach.
 
 use crate::{capture, guard, ocr, uia};
 use rmcp::handler::server::wrapper::{Json, Parameters};
@@ -20,6 +21,7 @@ use rmcp::model::{
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler};
 use schemars::JsonSchema;
 use serde::Deserialize;
+use serde::Serialize;
 
 #[derive(Clone)]
 pub struct Wincrust {
@@ -58,9 +60,20 @@ pub struct ActParams {
     /// result will say `resolved_by: "ocr"` when this path was taken.
     #[serde(default)]
     pub allow_ocr: bool,
-    /// click | type | toggle | expand | select
+    /// click | type | key | toggle | expand | select
+    ///
+    /// `type` sets a field's value through a control pattern. `key` sends
+    /// keystrokes - which is a different thing, and the one you need for
+    /// anything a value cannot express: Enter to submit, Escape to dismiss,
+    /// Ctrl+S to save. A console prompt is a text field *plus* Enter, so it
+    /// usually takes both.
     pub action: String,
-    /// Text, for `type`.
+    /// Text for `type`; a key specification for `key`.
+    ///
+    /// Key specs are whitespace-separated chords: `Enter`, `Ctrl+S`,
+    /// `Ctrl+Shift+P`, `F5`, `Home Shift+End Ctrl+C`. Modifiers are
+    /// ctrl/shift/alt/win. Unrecognised keys are refused rather than guessed
+    /// at, and a run is capped at 32 keystrokes.
     pub value: Option<String>,
 }
 
@@ -71,6 +84,55 @@ pub struct ObserveParams {
     pub detail: Option<String>,
     /// Downscale width before encoding. Default 1400; 0 for native.
     pub max_width: Option<u32>,
+}
+
+/// What `wait_for` observed.
+#[derive(Debug, Serialize, JsonSchema)]
+pub struct WaitResult {
+    pub ok: bool,
+    /// `ok` | `timeout` | `error`
+    ///
+    /// `timeout` means the condition never held and says nothing about why -
+    /// the target may be absent, or merely slow. `error` means a poll itself
+    /// failed.
+    pub status: String,
+    /// The condition that was waited on, echoed back.
+    pub until: String,
+    /// How many times the window was polled. A count of 1 means the condition
+    /// already held and nothing was actually waited for.
+    pub polls: u32,
+    pub elapsed_ms: f64,
+    /// On success for `appears`/`enabled`: the scope and entity to act with,
+    /// so a caller need not re-`discover` and race the thing it just waited
+    /// for.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched: Option<uia::Entity>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_by: Option<crate::text::MatchTier>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct WaitForParams {
+    /// Window to watch, from `windows`.
+    pub hwnd: isize,
+    /// What to wait for. Matched exactly as `act` matches, so a control you
+    /// waited for is a control `act` can then find.
+    pub select: uia::Selector,
+    /// `appears` (default) | `disappears` | `enabled`
+    ///
+    /// `disappears` waits out a progress dialog or a modal; `enabled` waits
+    /// for a button that exists but is greyed.
+    pub until: Option<String>,
+    /// Give up after this long. Default 10000, capped at 120000 - a wait that
+    /// outlives the caller's patience is a hang, not a wait.
+    pub timeout_ms: Option<u64>,
+    /// Gap between polls. Default 250, floored at 50. Each poll is a full
+    /// window walk, so a tight interval on a slow app costs more than it buys.
+    pub poll_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema, Default)]
@@ -248,6 +310,149 @@ impl Wincrust {
             ));
         }
         Ok(CallToolResult::success(out))
+    }
+
+    #[tool(
+        name = "wait_for",
+        description = "Block until a control appears, disappears or becomes enabled. Use this \
+                       instead of acting immediately after something that takes time - opening a \
+                       dialog, loading a file, starting a job. Polling `discover` from outside \
+                       costs a round trip per attempt; this polls in-process and hands back a \
+                       scope you can act on straight away."
+    )]
+    async fn wait_for(
+        &self,
+        Parameters(p): Parameters<WaitForParams>,
+    ) -> Result<Json<WaitResult>, McpError> {
+        let t0 = std::time::Instant::now();
+        let until = p.until.as_deref().unwrap_or("appears").to_ascii_lowercase();
+        if !matches!(until.as_str(), "appears" | "disappears" | "enabled") {
+            return Err(McpError::invalid_params(
+                format!("unknown `until` value {until:?} (appears|disappears|enabled)"),
+                None,
+            ));
+        }
+        if p.select.is_empty() {
+            return Err(McpError::invalid_params(
+                "`select` is empty - it would match every element and return instantly".to_string(),
+                None,
+            ));
+        }
+        // Capped, because a wait that outlives the caller is a hang rather than
+        // a wait. Floored, because each poll is a full window walk.
+        let timeout = std::time::Duration::from_millis(p.timeout_ms.unwrap_or(10_000).min(120_000));
+        let poll = std::time::Duration::from_millis(p.poll_ms.unwrap_or(250).max(50));
+
+        let mut polls: u32 = 0;
+        loop {
+            polls += 1;
+            let elapsed = || t0.elapsed().as_secs_f64() * 1000.0;
+
+            let outcome = self
+                .engine
+                .discover(uia::DiscoverArgs {
+                    hwnd: Some(p.hwnd),
+                    max_depth: 24,
+                    max_elements: 400,
+                    ttl_secs: crate::lease::DEFAULT_TTL_SECS,
+                    filter: uia::Filter::All,
+                    verbose: false,
+                })
+                .await;
+
+            match outcome {
+                Ok(d) => {
+                    let mut hits: Vec<(uia::Entity, crate::text::MatchTier)> = d
+                        .entities
+                        .iter()
+                        .filter_map(|e| uia::entity_matches(e, &p.select).map(|t| (e.clone(), t)))
+                        .collect();
+                    crate::text::keep_best(&mut hits, |h| h.1);
+
+                    let hit = match until.as_str() {
+                        "appears" => hits.first().cloned(),
+                        "enabled" => hits.iter().find(|(e, _)| e.enabled).cloned(),
+                        _ => None,
+                    };
+                    if until == "disappears" && hits.is_empty() {
+                        return Ok(Json(WaitResult {
+                            ok: true,
+                            status: "ok".into(),
+                            until,
+                            polls,
+                            elapsed_ms: elapsed(),
+                            scope: None,
+                            matched: None,
+                            matched_by: None,
+                            detail: None,
+                        }));
+                    }
+                    if let Some((e, tier)) = hit {
+                        return Ok(Json(WaitResult {
+                            ok: true,
+                            status: "ok".into(),
+                            until,
+                            polls,
+                            elapsed_ms: elapsed(),
+                            scope: Some(d.scope),
+                            matched: Some(e),
+                            matched_by: Some(tier),
+                            detail: None,
+                        }));
+                    }
+                }
+                Err(e) => {
+                    // A window that vanishes mid-wait is a legitimate way for
+                    // `disappears` to be satisfied, so a failed walk ends the
+                    // wait successfully there and is fatal everywhere else.
+                    if until == "disappears" {
+                        return Ok(Json(WaitResult {
+                            ok: true,
+                            status: "ok".into(),
+                            until,
+                            polls,
+                            elapsed_ms: elapsed(),
+                            scope: None,
+                            matched: None,
+                            matched_by: None,
+                            detail: Some(format!(
+                                "the window is no longer reachable, which satisfies `disappears`: {e}"
+                            )),
+                        }));
+                    }
+                    return Ok(Json(WaitResult {
+                        ok: false,
+                        status: "error".into(),
+                        until,
+                        polls,
+                        elapsed_ms: elapsed(),
+                        scope: None,
+                        matched: None,
+                        matched_by: None,
+                        detail: Some(format!("the window could not be walked: {e}")),
+                    }));
+                }
+            }
+
+            if t0.elapsed() >= timeout {
+                return Ok(Json(WaitResult {
+                    ok: false,
+                    status: "timeout".into(),
+                    until: until.clone(),
+                    polls,
+                    elapsed_ms: elapsed(),
+                    scope: None,
+                    matched: None,
+                    matched_by: None,
+                    detail: Some(format!(
+                        "nothing satisfied `{until}` for {} within {} ms",
+                        p.select.describe(),
+                        timeout.as_millis()
+                    )),
+                }));
+            }
+            tokio::time::sleep(poll).await;
+        }
     }
 
     #[tool(
@@ -552,6 +757,7 @@ async fn ocr_fallback(query: &str, action: &str, mut r: uia::ActResult) -> uia::
         r.status = status.to_string();
         r.resolved_by = "ocr".into();
         r.matched_by = None;
+        r.next_scope = None;
         r.detail = Some(detail);
         r.screen_changed = None;
         r.elapsed_ms += t0.elapsed().as_secs_f64() * 1000.0;
@@ -673,6 +879,8 @@ async fn ocr_fallback(query: &str, action: &str, mut r: uia::ActResult) -> uia::
         target: m.text.clone(),
         resolved_by: "ocr".into(),
         matched_by: Some(m.matched_by),
+        // The OCR path never had a scope to refresh - it resolved by pixels.
+        next_scope: None,
         detail: Some(format!(
             "not in the UI tree; clicked the screen at ({x},{y}) where OCR read {:?}. \
              No control pattern was involved, so this reports that the click was sent, \

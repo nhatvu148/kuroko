@@ -104,6 +104,68 @@ pub fn click_at(_x: i32, _y: i32) -> Result<()> {
     Err(anyhow!("synthetic input requires Windows"))
 }
 
+/// Sends a sequence of chords as synthetic keyboard input.
+///
+/// Keyboard input goes to whatever has focus - there is no per-element
+/// keyboard equivalent of `InvokePattern`. So the caller must focus the
+/// resolved element first, and `act` says so in its result rather than
+/// pretending the keystroke was delivered to a control by contract the way a
+/// pattern call is.
+///
+/// Modifiers are released in reverse order: releasing Ctrl before the key it
+/// modifies can deliver a different keystroke to the application.
+#[cfg(windows)]
+pub fn send_keys(chords: &[crate::keys::Chord]) -> Result<()> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS, KEYEVENTF_KEYUP,
+        VIRTUAL_KEY,
+    };
+
+    let mut events: Vec<INPUT> = Vec::with_capacity(chords.len() * 6);
+    let mk = |vk: u16, up: bool| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(vk),
+                wScan: 0,
+                dwFlags: if up {
+                    KEYEVENTF_KEYUP
+                } else {
+                    KEYBD_EVENT_FLAGS(0)
+                },
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    for c in chords {
+        let mods = c.modifiers();
+        for m in &mods {
+            events.push(mk(*m, false));
+        }
+        events.push(mk(c.key, false));
+        events.push(mk(c.key, true));
+        for m in mods.iter().rev() {
+            events.push(mk(*m, true));
+        }
+    }
+    // One batch, so nothing can interleave between a modifier press and the
+    // key it modifies.
+    let sent = unsafe { SendInput(&events, std::mem::size_of::<INPUT>() as i32) };
+    if sent as usize != events.len() {
+        anyhow::bail!(
+            "SendInput accepted {sent} of {} keyboard events",
+            events.len()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn send_keys(_c: &[crate::keys::Chord]) -> Result<()> {
+    anyhow::bail!("synthetic keyboard input requires Windows")
+}
+
 #[cfg(test)]
 mod tests {
     use super::to_normalized;

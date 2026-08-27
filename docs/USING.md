@@ -58,6 +58,33 @@ identical to a healthy server with nothing running.
 draws its own interface will return almost nothing here - six elements of
 window chrome is typical - which is the signal to fall back to OCR.
 
+### Waiting, instead of guessing at sleeps
+
+> Open the File menu, then wait until the Save As dialog appears.
+
+`wait_for` polls in-process and hands back a scope, so the thing you waited for
+can be acted on without a second round trip that races it. `until` is `appears`
+(default), `disappears` - for waiting out a progress dialog - or `enabled`, for
+a button that exists but is greyed.
+
+A timeout is reported as `timeout`, not an error: the target may be absent, or
+merely slower than you allowed.
+
+### Typing, and pressing keys
+
+These are different actions and the distinction matters.
+
+> Type "hello" into the editor, then press Enter.
+
+`type` sets a control's value through a pattern. `key` sends keystrokes:
+`Enter`, `Ctrl+S`, `F5`, or a sequence like `Home Shift+End Ctrl+C`. A console
+prompt is a text field *plus* Enter, so it usually needs both.
+
+`key` takes focus first, because keyboard input goes wherever focus is - there
+is no per-element keyboard equivalent of a control pattern. It is the one
+action here that is not a contract with a control, and it says so in its
+result.
+
 ### Reading a screen with no UI tree
 
 > Use OCR to read what is on my Windows screen right now.
@@ -117,6 +144,9 @@ target. A caller that retries on one should not retry on the other.
   composition or width had to be folded - that is the tier that makes `Tệp`
   typed on a Mac meet the same word reported by Windows. `affix` means
   decoration was stripped, such as the `(F)` in a localised `ファイル(F)`.
+- **`next_scope`** - present on success. Acting frequently changes the window
+  properties the scope is bound to, so the scope you just used is often stale
+  the moment the action lands. Chain on this instead of re-discovering.
 - **`screen_changed`** - only on the OCR path, and only for a click that was
   actually sent. A control pattern is a contract; a coordinate click is not,
   so this reports what the screen did immediately afterwards. Absent means the

@@ -5,8 +5,8 @@ description: Drive a Windows desktop over MCP - inspect windows, click and type 
 
 # wincrust
 
-An MCP server that acts on a Windows desktop. Six tools: `windows`,
-`discover`, `act`, `observe`, `find_text`, `launch`.
+An MCP server that acts on a Windows desktop. Seven tools: `windows`,
+`discover`, `act`, `observe`, `wait_for`, `find_text`, `launch`.
 
 ## Decide first: SSH or wincrust
 
@@ -40,8 +40,23 @@ the answer requires *looking at* or *touching* the desktop.
    few panes, no named controls), the app draws its own interface and has no
    UI tree. That is the signal for step 4, not a reason to give up.
 3. **`act`** with a selector. Prefer `automation_id` over `name`: identifiers
-   are stable across locales, labels are translated.
-4. **`find_text`** - OCR, for apps with no tree. Restrict it with `hwnd`:
+   are stable across locales, labels are translated. A successful `act` returns
+   **`next_scope`** - use it for the following action rather than
+   re-`discover`ing, because acting often changes the window's own identity
+   (typing adds a modified marker to the title) and invalidates the scope you
+   just used.
+   - **`type` sets a value; `key` presses keys.** They are different. A console
+     prompt is a text field *plus* Enter, so it usually needs both. Key specs
+     are chords: `Enter`, `Ctrl+S`, `Home Shift+End Ctrl+C`.
+   - `key` takes focus, because keyboard input goes wherever focus is. That is
+     a visible side effect and the only action here that is not a contract with
+     a control.
+4. **`wait_for`** before acting on anything that takes time to appear - a
+   dialog, a loaded file, a finished job. `until` is `appears` (default),
+   `disappears` or `enabled`. It returns a scope, so you can act on what you
+   waited for without racing it. Do not poll `discover` in a loop instead:
+   that is a round trip per attempt.
+5. **`find_text`** - OCR, for apps with no tree. Restrict it with `hwnd`:
    fewer pixels means more magnification and better accuracy, and it stops a
    query matching text elsewhere on the desktop.
 

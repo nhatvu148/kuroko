@@ -17,7 +17,7 @@ admin token on a network socket, with tools including `PowerShell` and `Registry
 wincrust has 16 direct dependencies and 168 transitive crates. That is not a small number, and
 it would be dishonest to pretend otherwise — the difference is in kind, not count: Rust dependencies
 are resolved at compile time and dead-code-eliminated, with no interpreter, no dynamic import and no
-`eval` in the running process. And the tool surface is six, none of which is a shell.
+`eval` in the running process. And the tool surface is seven, none of which is a shell.
 
 Elevation itself is not the reason — that is a `-RunLevel Highest` flag on a scheduled task, no code
 required. The reason is what elevation does to the cost of a large dependency tree.
@@ -29,7 +29,9 @@ required. The reason is what elevation does to the cost of a large dependency tr
 | `windows` | top-level windows with handles, pids, bounds |
 | `discover` | actionable elements + a signed scope |
 | `act` | click / type / toggle / expand / select, via UIA control patterns |
+| `act` + `key` | send keystrokes to a resolved control — `Enter`, `Ctrl+S`, `F5` |
 | `observe` | `text` \| `image` \| `diff` |
+| `wait_for` | block until a control appears, disappears or becomes enabled |
 | `find_text` | OCR the screen, return text with coordinates — for apps with no UI tree |
 | `act` + `allow_ocr` | when the UI tree has no match, click what OCR read instead (opt-in) |
 | `launch` | allowlist-only; fails closed |

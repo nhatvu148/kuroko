@@ -2,6 +2,7 @@ mod capture;
 mod dpi;
 mod guard;
 mod input;
+mod keys;
 mod lease;
 mod ocr;
 mod server;
