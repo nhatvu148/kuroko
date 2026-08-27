@@ -260,9 +260,18 @@ if ($proc.SessionId -eq 0) {
     Write-Host "  running in session $($proc.SessionId) - the interactive desktop" -ForegroundColor Green
 }
 
+# Match on the owning process, not just the port. Another process holding
+# $Port would otherwise produce a confident "listening on ..." line for a
+# server that never bound at all - the success message reporting someone
+# else's socket.
 $listening = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
-    Where-Object { $_.LocalPort -eq $Port } | Select-Object -First 1
-if ($listening) { Write-Host "  listening on $($listening.LocalAddress):$Port" -ForegroundColor Green }
+    Where-Object { $_.OwningProcess -eq $proc.Id } | Select-Object -First 1
+if ($listening) {
+    Write-Host "  listening on $($listening.LocalAddress):$($listening.LocalPort)" -ForegroundColor Green
+} else {
+    Write-Warn "Process is up but is not listening on a port yet. Check the log:"
+    Write-Warn "  Get-Content `"$LogFile`" -Tail 20"
+}
 
 Write-Host ''
 Write-Host 'On the client machine:' -ForegroundColor Cyan

@@ -7,7 +7,9 @@
 version: '3'
 
 vars:
-  TASK_NAME: wincrust-serve
+  # The scheduled task name deliberately lives in scripts/wincrust-serve.ps1
+  # alone. Declaring it here too would give it two homes and one of them would
+  # eventually be renamed without the other.
   PORT: '{{.PORT | default "8900"}}'
   # CLIENT_IP is deliberately NOT defaulted here. `requires` checks that a
   # variable is set, not that it is non-empty, so a default of "" would make
