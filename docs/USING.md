@@ -70,6 +70,12 @@ a button that exists but is greyed.
 A timeout is reported as `timeout`, not an error: the target may be absent, or
 merely slower than you allowed.
 
+The round trips are not the main saving. The alternative to `wait_for` is
+polling with `observe detail=image`, which costs roughly **2,700 tokens a
+shot** against roughly **100** for a `wait_for` result. On a dialog that takes
+a while, that is the difference between a wait costing twenty thousand tokens
+and costing nothing.
+
 ### Typing, and pressing keys
 
 These are different actions and the distinction matters.

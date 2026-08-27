@@ -54,8 +54,9 @@ the answer requires *looking at* or *touching* the desktop.
 4. **`wait_for`** before acting on anything that takes time to appear - a
    dialog, a loaded file, a finished job. `until` is `appears` (default),
    `disappears` or `enabled`. It returns a scope, so you can act on what you
-   waited for without racing it. Do not poll `discover` in a loop instead:
-   that is a round trip per attempt.
+   waited for without racing it. Do not poll `discover` in a loop instead, and
+   never poll with `observe detail=image`: that is ~2,700 tokens a shot against
+   ~100 for a `wait_for` result.
 5. **`find_text`** - OCR, for apps with no tree. Restrict it with `hwnd`:
    fewer pixels means more magnification and better accuracy, and it stops a
    query matching text elsewhere on the desktop.
@@ -94,9 +95,10 @@ Do not report success from `ok: true` alone.
 
 - **UAC consent prompts are unreachable** by any process, elevated or not.
   They live on the Secure Desktop. This is not a gap to route around.
-- **`launch` only accepts allowlisted names**, from a file on the host. If a
-  name is refused, say so and name the file; do not look for another way to
-  start a process.
+- **`launch` only accepts allowlisted names**, from a file on the host, and the
+  file is empty until someone fills it. If a name is refused, say so and name
+  the file - `%LOCALAPPDATA%\wincrust\launch-allowlist.txt`, or re-run setup
+  with `-Allow <name>`. Do not look for another way to start a process.
 - **A locked session** returns the lock screen, so capture and OCR refuse
   rather than returning a picture of nothing. The machine has to be unlocked.
 

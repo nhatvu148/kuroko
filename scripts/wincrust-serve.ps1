@@ -31,6 +31,15 @@
 .PARAMETER Port
     Defaults to 8900.
 
+.PARAMETER Allow
+    Application names `launch` is permitted to start, e.g. `-Allow notepad,jupiter`.
+
+    The allowlist fails closed: with no file, or an empty one, `launch` refuses
+    everything. That is the right default - it is the only tool here that starts
+    a process - but it also means `launch` never works until someone names
+    something, and the file it wants is easy to not find. Naming them here
+    writes the file; omitting this leaves whatever is already there.
+
 .PARAMETER RotateKey
     Generate a new auth key. Existing clients will start getting 401 and must
     be reconfigured, so this is opt-in rather than the default.
@@ -61,6 +70,9 @@ param(
     [switch] $RotateKey,
 
     [Parameter(ParameterSetName = 'Install')]
+    [string[]] $Allow,
+
+    [Parameter(ParameterSetName = 'Install')]
     [switch] $SkipInstall,
 
     [Parameter(ParameterSetName = 'Uninstall', Mandatory = $true)]
@@ -85,6 +97,7 @@ Set-StrictMode -Version Latest
 $TaskName = 'wincrust-serve'
 $Dir      = Join-Path $env:LOCALAPPDATA 'wincrust'
 $KeyFile  = Join-Path $Dir 'auth-key.txt'
+$AllowFile = Join-Path $Dir 'launch-allowlist.txt'
 $Launcher = Join-Path $Dir 'serve.ps1'
 $LogFile  = Join-Path $Dir 'serve.log'
 
@@ -130,6 +143,12 @@ if ($Status) {
     $listen = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
         Where-Object { $_.OwningProcess -and $p -and $_.OwningProcess -eq $p.Id } | Select-Object -First 1
     if ($listen) { Write-Host "listening on $($listen.LocalAddress):$($listen.LocalPort)" }
+    $n = 0
+    if (Test-Path $AllowFile) {
+        $n = @(Get-Content $AllowFile |
+            Where-Object { $_.Trim() -and -not $_.Trim().StartsWith('#') }).Count
+    }
+    Write-Host "launch allowlist: $n entries$(if ($n -eq 0) { ' - launch will refuse everything' })"
     if (Test-TaskRegistered) {
         Get-ScheduledTaskInfo -TaskName $TaskName -ErrorAction SilentlyContinue |
             Format-List TaskName, LastRunTime, LastTaskResult, NumberOfMissedRuns
@@ -254,8 +273,11 @@ if (-not $ListenIp) {
     Write-Host "  detected Tailscale IP: $ListenIp"
 }
 
-$allow = ($ClientIp | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ','
-if (-not $allow) { throw '-ClientIp resolved to nothing.' }
+# Named $ipAllow, not $allow: PowerShell variable names are case-insensitive,
+# so a local $allow silently becomes the $Allow parameter and vice versa. That
+# is not a hypothetical - it wrote the client IP into the launch allowlist.
+$ipAllow = ($ClientIp | ForEach-Object { $_.Trim() } | Where-Object { $_ }) -join ','
+if (-not $ipAllow) { throw '-ClientIp resolved to nothing.' }
 
 # --- the key ----------------------------------------------------------------
 
@@ -297,6 +319,24 @@ if (Test-Path $KeyFile) {
     }
 }
 
+# --- the launch allowlist ----------------------------------------------------
+
+if ($Allow) {
+    $names = $Allow |
+        ForEach-Object { $_ -split ',' } |
+        ForEach-Object { $_.Trim().ToLowerInvariant() } |
+        Where-Object { $_ } |
+        Select-Object -Unique
+    Write-Step "Writing $AllowFile"
+    $header = @(
+        '# Applications `launch` may start. One name per line; # comments.',
+        '# Matched exactly and case-insensitively - there is no way to run an',
+        '# arbitrary command, and an absent or empty file permits nothing.'
+    )
+    Set-Content -Path $AllowFile -Value ($header + $names) -Encoding ASCII
+    Write-Host "  permitted: $($names -join ', ')"
+}
+
 # --- the launcher -----------------------------------------------------------
 
 Write-Step "Writing $Launcher"
@@ -307,7 +347,7 @@ $launcherBody = @"
 # definition or in any process command line.
 `$env:WINCRUST_AUTH_KEY = (Get-Content "$KeyFile" -Raw).Trim()
 `$env:RUST_LOG = "info"
-& "$Exe" serve --transport http --host $ListenIp --port $Port --ip-allowlist $allow *>> "$LogFile"
+& "$Exe" serve --transport http --host $ListenIp --port $Port --ip-allowlist $ipAllow *>> "$LogFile"
 "@
 try {
     Set-Content -Path $Launcher -Value $launcherBody -Encoding UTF8 -ErrorAction Stop
@@ -374,6 +414,20 @@ if ($listening) {
 } else {
     Write-Warn "Process is up but is not listening on a port yet. Check the log:"
     Write-Warn "  Get-Content `"$LogFile`" -Tail 20"
+}
+
+$allowCount = 0
+if (Test-Path $AllowFile) {
+    $allowCount = @(Get-Content $AllowFile |
+        Where-Object { $_.Trim() -and -not $_.Trim().StartsWith('#') }).Count
+}
+if ($allowCount -eq 0) {
+    # Said out loud because the failure is otherwise discovered mid-task, when
+    # `launch` refuses and the caller falls back to Start-Process.
+    Write-Warn "launch allowlist is empty - `launch` will refuse every application."
+    Write-Warn "  Re-run with -Allow notepad,someapp  (or edit $AllowFile)"
+} else {
+    Write-Host "  launch allowlist: $allowCount entr$(if ($allowCount -eq 1) { 'y' } else { 'ies' })" -ForegroundColor Green
 }
 
 Write-Host ''

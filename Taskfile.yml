@@ -93,7 +93,7 @@ tasks:
   # --- the desktop server ----------------------------------------------------
 
   setup:
-    desc: 'Install and register the desktop server. Requires CLIENT_IP=<tailscale ip>'
+    desc: 'Install and register the desktop server. Requires CLIENT_IP=<ip>; optional ALLOW=app1,app2 for `launch`'
     platforms: [windows]
     requires:
       vars: [CLIENT_IP]
