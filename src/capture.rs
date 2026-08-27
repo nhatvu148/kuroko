@@ -106,9 +106,8 @@ pub fn session_is_locked() -> bool {
 #[cfg(windows)]
 pub fn capture_window(hwnd: isize) -> Result<Frame> {
     use windows::Win32::Foundation::{HWND, RECT};
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowRect, IsWindow, PrintWindow, PRINT_WINDOW_FLAGS,
-    };
+    use windows::Win32::Storage::Xps::{PrintWindow, PRINT_WINDOW_FLAGS};
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, IsWindow};
 
     // Stable since 8.1: render the full content, accelerated surfaces included.
     const PW_RENDERFULLCONTENT: u32 = 0x0000_0002;

@@ -70,6 +70,11 @@ windows = { version = "0.62.2", features = [
   "Win32_UI_Accessibility",
   "Win32_UI_WindowsAndMessaging",
   "Win32_Graphics_Gdi",
+  # PrintWindow lives under Storage::Xps, grouped with the printing APIs -
+  # which is nowhere near where anyone would look for it. It is how a window
+  # is rendered on demand, and the only way to capture an accelerated viewport
+  # that DWM composites and a screen read therefore misses.
+  "Win32_Storage_Xps",
   "Win32_Security",
   "Win32_Security_Authorization",
   "Win32_System_StationsAndDesktops",
