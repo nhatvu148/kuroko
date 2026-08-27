@@ -99,6 +99,31 @@ impl std::str::FromStr for Filter {
     }
 }
 
+/// Whether an entity satisfies a selector, and at which tier.
+///
+/// Mirrors the selector semantics `act` uses, but against an already-returned
+/// `Entity` rather than a live COM element - so `wait_for` can poll without a
+/// second cross-process walk per candidate. Kept here, and pure, so the
+/// semantics can be tested without a desktop.
+pub fn entity_matches(e: &Entity, sel: &Selector) -> Option<crate::text::MatchTier> {
+    let name_tier = match sel.name.as_ref() {
+        None => Some(crate::text::MatchTier::Exact),
+        Some(n) => crate::text::tier_of(&e.name, n),
+    };
+    let ok_id = sel
+        .automation_id
+        .as_ref()
+        .is_none_or(|a| *a == e.automation_id);
+    let ok_ct = sel
+        .control_type
+        .as_ref()
+        .is_none_or(|c| c.eq_ignore_ascii_case(&e.control_type));
+    match (name_tier, ok_id, ok_ct) {
+        (Some(t), true, true) => Some(t),
+        _ => None,
+    }
+}
+
 pub struct DiscoverArgs {
     pub hwnd: Option<isize>,
     pub max_depth: u32,
@@ -132,6 +157,21 @@ pub struct ActResult {
     /// wants to know that happened.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matched_by: Option<crate::text::MatchTier>,
+    /// A scope for the window as it is *now*, minted after the action.
+    ///
+    /// Acting frequently changes the very properties the generation hash is
+    /// built from - typing into a document puts a modified marker in the title
+    /// bar, and the next `act` on the same scope then fails
+    /// `identity_changed`. That guard is correct and must stay, but making
+    /// every caller re-`discover` after every successful action is a round
+    /// trip per keystroke on a heavy app.
+    ///
+    /// So a successful `act` hands back a fresh scope for the same window.
+    /// Paths are unaffected - the tree did not move - so a caller can keep
+    /// acting with the paths it already has. Absent when the action failed,
+    /// because then the old scope is exactly what should be re-examined.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_scope: Option<String>,
     /// Only on the OCR path, and only for a click that was actually sent.
     ///
     /// A control pattern is a contract with the control; a coordinate click is
@@ -359,5 +399,72 @@ mod selector_tests {
         }
         .describe();
         assert_eq!(d, "control_type=\"button\"");
+    }
+}
+
+#[cfg(test)]
+mod wait_match_tests {
+    use super::*;
+    use crate::text::MatchTier;
+
+    fn ent(name: &str, ct: &str, aid: &str, enabled: bool) -> Entity {
+        Entity {
+            name: name.into(),
+            control_type: ct.into(),
+            automation_id: aid.into(),
+            bounds: None,
+            click_at: (0, 0),
+            actions: vec![],
+            enabled,
+            path: vec![],
+        }
+    }
+
+    #[test]
+    fn an_empty_selector_matches_anything() {
+        let e = ent("Save", "button", "", true);
+        assert_eq!(
+            entity_matches(&e, &Selector::default()),
+            Some(MatchTier::Exact)
+        );
+    }
+
+    #[test]
+    fn it_uses_the_same_locale_ladder_as_act() {
+        // If wait_for matched differently from act, waiting for a control and
+        // then acting on it could disagree - which is the worst possible bug
+        // in a wait primitive.
+        let e = ent("\u{30d5}\u{30a1}\u{30a4}\u{30eb}(F)", "menu item", "", true);
+        let sel = Selector {
+            name: Some("\u{30d5}\u{30a1}\u{30a4}\u{30eb}".into()),
+            ..Default::default()
+        };
+        assert_eq!(entity_matches(&e, &sel), Some(MatchTier::Affix));
+    }
+
+    #[test]
+    fn automation_id_is_exact_and_case_sensitive() {
+        let e = ent("Save", "button", "btnSave", true);
+        let ok = Selector {
+            automation_id: Some("btnSave".into()),
+            ..Default::default()
+        };
+        let bad = Selector {
+            automation_id: Some("btnsave".into()),
+            ..Default::default()
+        };
+        assert!(entity_matches(&e, &ok).is_some());
+        assert!(entity_matches(&e, &bad).is_none());
+    }
+
+    #[test]
+    fn every_named_field_must_match() {
+        let e = ent("Save", "button", "btnSave", true);
+        let wrong_type = Selector {
+            name: Some("Save".into()),
+            control_type: Some("menu item".into()),
+            ..Default::default()
+        };
+        assert!(entity_matches(&e, &wrong_type).is_none());
     }
 }

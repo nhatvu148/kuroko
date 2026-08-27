@@ -1,8 +1,8 @@
 [package]
 name = "wincrust"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
-description = "Windows desktop automation over MCP. Pure Rust, single binary, six tools, no shell."
+description = "Windows desktop automation over MCP. Pure Rust, single binary, seven tools, no shell."
 license = "MIT"
 repository = "https://github.com/nhatvu148/wincrust"
 readme = "README.md"

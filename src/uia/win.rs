@@ -391,6 +391,58 @@ unsafe fn to_entity(
     }))
 }
 
+/// A scope for the window as it stands right now.
+///
+/// Acting often changes the very properties `generation_of` hashes - typing
+/// into a document adds a modified marker to the title - so the scope a caller
+/// just used is frequently stale the instant the action succeeds. Re-reading
+/// here costs one cached property fetch and saves the caller a full
+/// re-`discover`, which on a heavy window is 400-500 ms per action.
+///
+/// Returns `None` rather than failing the action: the action already happened,
+/// and a caller that cannot get a fresh scope can still re-discover.
+unsafe fn fresh_scope(a: &IUIAutomation, hwnd: HWND, key: &[u8]) -> Option<String> {
+    let req = a.CreateCacheRequest().ok()?;
+    req.SetTreeScope(TreeScope_Element).ok()?;
+    for prop in [
+        UIA_NamePropertyId,
+        UIA_ClassNamePropertyId,
+        UIA_ProcessIdPropertyId,
+        UIA_BoundingRectanglePropertyId,
+    ] {
+        req.AddProperty(prop).ok()?;
+    }
+    let el = a
+        .ElementFromHandle(hwnd)
+        .ok()?
+        .BuildUpdatedCache(&req)
+        .ok()?;
+    let wr: RECT = el.CachedBoundingRectangle().unwrap_or_default();
+    let w = WindowInfo {
+        name: el.CachedName().map(|b| b.to_string()).unwrap_or_default(),
+        class_name: el
+            .CachedClassName()
+            .map(|b| b.to_string())
+            .unwrap_or_default(),
+        control_type: String::new(),
+        hwnd: hwnd.0 as isize,
+        pid: el.CachedProcessId().unwrap_or(0),
+        bounds: Bounds {
+            x: wr.left,
+            y: wr.top,
+            w: wr.right - wr.left,
+            h: wr.bottom - wr.top,
+        },
+    };
+    Scope {
+        hwnd: w.hwnd,
+        generation: generation_of(&w),
+        exp: now() + crate::lease::DEFAULT_TTL_SECS,
+    }
+    .encode(key)
+    .ok()
+}
+
 /// Cheap fingerprint of a window's identity. `act` compares this against the
 /// lease so a replaced or resized window is caught before input is sent.
 fn generation_of(w: &WindowInfo) -> u64 {
@@ -418,6 +470,7 @@ macro_rules! guard_found {
             target: $target,
             resolved_by: $by.to_string(),
             matched_by: $tier,
+            next_scope: None,
             screen_changed: None,
             detail: Some($detail),
             elapsed_ms: $t0.elapsed().as_secs_f64() * 1000.0,
@@ -434,6 +487,7 @@ macro_rules! guard {
             target: $target,
             resolved_by: $by.to_string(),
             matched_by: None,
+            next_scope: None,
             detail: Some($detail),
             // The UIA path has real perception guards; this field exists for
             // the coordinate path, which has none.
@@ -673,6 +727,65 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
             );
         }
 
+        // Handled before the pattern table, because keyboard input has no
+        // control pattern: it goes wherever focus is. That makes it the one
+        // action here that is not a contract with a control, so it takes focus
+        // explicitly and says so, rather than looking like an Invoke.
+        if args.action == "key" {
+            let spec = args.value.clone().unwrap_or_default();
+            let chords = match crate::keys::parse(&spec) {
+                Ok(c) => c,
+                Err(e) => guard_found!(
+                    "pattern_gone",
+                    args.action,
+                    target,
+                    t0,
+                    format!("{e}"),
+                    by,
+                    matched_by
+                ),
+            };
+            if let Err(e) = el.SetFocus() {
+                guard_found!(
+                    "pattern_gone",
+                    args.action,
+                    target,
+                    t0,
+                    format!("could not focus the control to type into it: {e}"),
+                    by,
+                    matched_by
+                );
+            }
+            if let Err(e) = crate::input::send_keys(&chords) {
+                guard_found!(
+                    "pattern_gone",
+                    args.action,
+                    target,
+                    t0,
+                    format!("focus was taken but the keystrokes failed: {e}"),
+                    by,
+                    matched_by
+                );
+            }
+            return Ok(ActResult {
+                ok: true,
+                action: args.action.clone(),
+                status: "ok".to_string(),
+                target,
+                resolved_by: by.to_string(),
+                matched_by,
+                next_scope: fresh_scope(a, hwnd, key),
+                screen_changed: None,
+                detail: Some(format!(
+                    "focused the control and sent {} keystroke(s): {spec:?}. Keyboard input goes \
+                     to whatever holds focus, so this reports that the keys were sent, not that \
+                     the control consumed them - and taking focus is a visible side effect.",
+                    chords.len()
+                )),
+                elapsed_ms: t0.elapsed().as_secs_f64() * 1000.0,
+            });
+        }
+
         let ok_detail = match args.action.as_str() {
             "click" => el
                 .GetCachedPatternAs::<IUIAutomationInvokePattern>(UIA_InvokePatternId)
@@ -733,6 +846,7 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
                 target,
                 resolved_by: by.to_string(),
                 matched_by,
+                next_scope: fresh_scope(a, hwnd, key),
                 screen_changed: None,
                 detail: Some(detail),
                 elapsed_ms: t0.elapsed().as_secs_f64() * 1000.0,
