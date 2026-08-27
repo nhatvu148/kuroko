@@ -69,7 +69,9 @@ pub struct ObserveParams {
 
 #[derive(Debug, Deserialize, JsonSchema, Default)]
 pub struct FindTextParams {
-    /// Case-insensitive substring. Omit to return every line on screen.
+    /// Substring to look for. Matching folds case, Unicode composition
+    /// (NFD vs NFC) and full-width forms, then falls back to characters OCR
+    /// commonly confuses. Omit to return every line on screen.
     pub query: Option<String>,
     /// Cap on returned matches. Default 50.
     pub max_matches: Option<usize>,
@@ -77,6 +79,12 @@ pub struct FindTextParams {
     /// pixels means more magnification and better accuracy, and it stops a
     /// query matching text elsewhere on the desktop.
     pub hwnd: Option<isize>,
+    /// BCP-47 recognizer language, e.g. `ja` or `de-DE`. Defaults to the user
+    /// profile's languages, which is wrong whenever the profile and the
+    /// application disagree - and wrong quietly, since a mismatched recognizer
+    /// returns confident nonsense rather than an error. Every response lists
+    /// `available_languages`; pick from those.
+    pub lang: Option<String>,
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -250,6 +258,7 @@ impl Wincrust {
         let q = p.query;
         let max = p.max_matches.unwrap_or(50);
         let hwnd = p.hwnd;
+        let lang = p.lang;
         tokio::task::spawn_blocking(move || {
             ocr::find_text(ocr::FindArgs {
                 query: q.as_deref(),
@@ -258,6 +267,7 @@ impl Wincrust {
                 scale: 0.0,
                 image: None,
                 prep: crate::capture::Prep::None,
+                lang: lang.as_deref(),
             })
         })
         .await
@@ -480,6 +490,9 @@ async fn ocr_fallback(query: &str, action: &str, mut r: uia::ActResult) -> uia::
             scale: 0.0,
             image: None,
             prep: crate::capture::Prep::None,
+            // Profile default: the fallback has no idea what language the app
+            // it is rescuing renders in, and guessing would be worse.
+            lang: None,
         })
     })
     .await;
@@ -488,6 +501,7 @@ async fn ocr_fallback(query: &str, action: &str, mut r: uia::ActResult) -> uia::
         r.ok = false;
         r.status = status.to_string();
         r.resolved_by = "ocr".into();
+        r.matched_by = None;
         r.detail = Some(detail);
         r.screen_changed = None;
         r.elapsed_ms += t0.elapsed().as_secs_f64() * 1000.0;
@@ -571,6 +585,16 @@ async fn ocr_fallback(query: &str, action: &str, mut r: uia::ActResult) -> uia::
         None => None,
     };
 
+    // A loose read is worth saying out loud: the caller asked for one string
+    // and OCR clicked a different one it judged equivalent.
+    let loose = match m.matched_by {
+        crate::text::MatchTier::Exact | crate::text::MatchTier::Case => String::new(),
+        t => format!(
+            " The text was matched at the {} tier rather than read back verbatim,",
+            t.as_str()
+        ),
+    };
+
     let note = match &changed {
         Some(c) => format!(
             "the screen then changed over {:.2}% of its area at ({},{}) {}x{}",
@@ -591,10 +615,11 @@ async fn ocr_fallback(query: &str, action: &str, mut r: uia::ActResult) -> uia::
         status: "ok".into(),
         target: m.text.clone(),
         resolved_by: "ocr".into(),
+        matched_by: Some(m.matched_by),
         detail: Some(format!(
             "not in the UI tree; clicked the screen at ({x},{y}) where OCR read {:?}. \
              No control pattern was involved, so this reports that the click was sent, \
-             not that the application handled it - {note}.",
+             not that the application handled it -{loose} {note}.",
             m.text
         )),
         screen_changed: changed,

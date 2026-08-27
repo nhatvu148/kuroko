@@ -5,6 +5,7 @@ mod input;
 mod lease;
 mod ocr;
 mod server;
+mod text;
 mod uia;
 
 use anyhow::Result;
@@ -49,8 +50,9 @@ enum Command {
     },
     /// Read text off the screen and return where it is (OCR).
     FindText {
-        /// Case-insensitive substring, tolerant of glyphs OCR confuses (1/I/l,
-        /// 0/O, 5/S...). Omit to return every line found.
+        /// Substring to find. Folds case, Unicode composition and full-width
+        /// forms, then falls back to glyphs OCR confuses (1/I/l, 0/O, 5/S...).
+        /// Omit to return every line found.
         #[arg(long)]
         query: Option<String>,
         #[arg(long, default_value_t = 50)]
@@ -71,6 +73,11 @@ enum Command {
         /// Pixel preparation: none | gray | contrast | otsu | sharpen.
         #[arg(long, default_value = "none")]
         preprocess: capture::Prep,
+        /// BCP-47 recognizer language (ja, de-DE). Defaults to the user
+        /// profile's, which quietly returns nonsense when the profile and the
+        /// application disagree. Every response lists what is installed.
+        #[arg(long)]
+        lang: Option<String>,
     },
     /// List displays with their bounds and real scale factors.
     Displays,
@@ -214,6 +221,7 @@ async fn main() -> Result<()> {
             scale,
             image,
             preprocess,
+            lang,
         } => {
             let r = tokio::task::spawn_blocking(move || {
                 ocr::find_text(ocr::FindArgs {
@@ -223,6 +231,7 @@ async fn main() -> Result<()> {
                     scale,
                     image: image.as_deref(),
                     prep: preprocess,
+                    lang: lang.as_deref(),
                 })
             })
             .await??;
