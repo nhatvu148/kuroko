@@ -114,7 +114,7 @@ to use the coordinate path. The harness window recorded the screen point it
 actually received, making the check independent of anything wincrust reports
 about itself:
 
-| layout | virtual origin | wincrust aimed at | window received | |
+| layout | virtual origin | wincrust aimed at | window received | match |
 |---|---|---|---|---|
 | second display right | (0,0) | (2270, 319) | (2270, 319) | exact |
 | second display **left** | **(-1920,0)** | (-1570, 319) | (-1570, 319) | exact |
@@ -124,9 +124,10 @@ exercised rather than the control-pattern shortcut, which involves no
 coordinates at all and would have proved nothing.
 
 Not covered: displays at **different scale factors**. Scaling is verified at
-100/125/150/175% on a single display, and mixed-DPI across two monitors is a
-distinct case ([#5](https://github.com/nhatvu148/wincrust/issues/5) tracked the
-plain geometry, which is now closed).
+100/125/150/175% on a single display; mixed-DPI across two monitors is a
+distinct case and was not tested. No issue tracks it - nothing seen here
+suggests it is broken, and filing one would assert a defect nobody has
+observed.
 
 ### Localised labels
 
