@@ -39,6 +39,11 @@ run with an admin token.
 
 ## Driving it from another machine
 
+Once it is running, [docs/USING.md](docs/USING.md) covers what to actually ask
+it, how to read what `act` gives back, and - more useful than either - when to
+use SSH instead.
+
+
 The server has to run on Windows, because it drives a Windows desktop. The
 client does not: this is the arrangement it was built for, a Mac or Linux
 machine running the agent and a Windows box running the desktop.
