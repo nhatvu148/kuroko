@@ -387,6 +387,45 @@ pub async fn serve(
     }
 }
 
+/// The `Host` header values this server accepts.
+///
+/// rmcp validates the inbound `Host` against an allowlist defaulting to
+/// loopback only, as protection against DNS rebinding: a page in a browser can
+/// be tricked into resolving an attacker's name to 127.0.0.1 and talking to a
+/// local server, and the `Host` header is what gives that away.
+///
+/// That default is right for a server that only ever listens on localhost, and
+/// wrong for this one, whose entire remote story is binding a Tailscale
+/// address. Passing the default through meant every non-loopback bind answered
+/// 403 - the transport was unusable for the one case it exists for.
+///
+/// Clearing the check would trade one bug for a worse one. Instead the address
+/// the operator explicitly asked to bind is added, both bare and with the port,
+/// since either spelling can arrive in the header. Everything else is still
+/// rejected, and an empty default is left empty: rmcp reads that as "checking
+/// disabled", and this function must not quietly re-enable it.
+fn allowed_hosts_for(mut default: Vec<String>, host: &str, port: u16) -> Vec<String> {
+    if default.is_empty() {
+        return default;
+    }
+    // An IPv6 literal has to be bracketed to survive authority parsing:
+    // `fd7a::1:8900` is ambiguous with the address itself and does not parse,
+    // so an unbracketed entry becomes a dead one that matches nothing. rmcp
+    // strips brackets when normalising, so the bracketed form still compares
+    // equal to a plain `Host` header.
+    let bare = match host.trim_matches(['[', ']']).parse::<std::net::Ipv6Addr>() {
+        Ok(_) => format!("[{}]", host.trim_matches(['[', ']'])),
+        Err(_) => host.to_string(),
+    };
+    let with_port = format!("{bare}:{port}");
+    for h in [bare, with_port] {
+        if !default.contains(&h) {
+            default.push(h);
+        }
+    }
+    default
+}
+
 async fn serve_http(
     engine: uia::Engine,
     host: &str,
@@ -397,14 +436,19 @@ async fn serve_http(
     use axum::extract::ConnectInfo;
     use axum::http::StatusCode;
     use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
-    use rmcp::transport::streamable_http_server::StreamableHttpService;
+    use rmcp::transport::streamable_http_server::{
+        StreamableHttpServerConfig, StreamableHttpService,
+    };
     use std::net::SocketAddr;
 
     let allowlist = std::sync::Arc::new(guard::load_allowlist());
+
+    let mut cfg = StreamableHttpServerConfig::default();
+    cfg.allowed_hosts = allowed_hosts_for(cfg.allowed_hosts, host, port);
     let svc = StreamableHttpService::new(
         move || Ok(Wincrust::new(engine.clone(), allowlist.clone())),
         LocalSessionManager::default().into(),
-        Default::default(),
+        cfg,
     );
 
     let key = auth_key.clone();
@@ -642,3 +686,84 @@ async fn ocr_fallback(query: &str, action: &str, mut r: uia::ActResult) -> uia::
 
 /// How long to wait between a coordinate click and the confirming capture.
 const SETTLE_MS: u64 = 250;
+
+#[cfg(test)]
+mod host_tests {
+    use super::allowed_hosts_for;
+
+    fn loopback() -> Vec<String> {
+        vec!["localhost".into(), "127.0.0.1".into(), "::1".into()]
+    }
+
+    /// rmcp's own matching, reproduced through the same `http::uri::Authority`
+    /// it uses: parse each entry, fall back to a bare hostname when it will not
+    /// parse, strip brackets, and compare. Asserting on the returned `Vec`
+    /// alone proved only that a string was present - not that rmcp would ever
+    /// match it, which is precisely where the IPv6 entry went wrong.
+    fn rmcp_would_allow(allowed: &[String], host_header: &str) -> bool {
+        fn norm(h: &str) -> String {
+            h.trim_matches('[').trim_matches(']').to_ascii_lowercase()
+        }
+        fn parse(s: &str) -> (String, Option<u16>) {
+            match http::uri::Authority::try_from(s) {
+                Ok(a) => (norm(a.host()), a.port_u16()),
+                Err(_) => (norm(s), None),
+            }
+        }
+        let (hh, hp) = parse(host_header);
+        allowed
+            .iter()
+            .map(|a| parse(a))
+            .any(|(ah, ap)| ah == hh && ap.is_none_or(|p| hp == Some(p)))
+    }
+
+    #[test]
+    fn a_tailscale_bind_becomes_reachable() {
+        // The shipped 0.1.0 bug: this address answered 403 on every request.
+        let out = allowed_hosts_for(loopback(), "100.78.123.110", 8900);
+        assert!(rmcp_would_allow(&out, "100.78.123.110:8900"));
+    }
+
+    #[test]
+    fn an_ipv6_bind_is_bracketed_so_the_port_entry_is_not_dead() {
+        // `fd7a::1:8900` does not parse as an authority, so an unbracketed
+        // entry silently matches nothing and the port is never enforced.
+        let out = allowed_hosts_for(loopback(), "fd7a:115c:a1e0::1", 8900);
+        assert!(
+            out.contains(&"[fd7a:115c:a1e0::1]:8900".to_string()),
+            "{out:?}"
+        );
+        assert!(rmcp_would_allow(&out, "[fd7a:115c:a1e0::1]:8900"));
+    }
+
+    #[test]
+    fn an_already_bracketed_ipv6_host_is_not_double_bracketed() {
+        let out = allowed_hosts_for(loopback(), "[fd7a:115c:a1e0::1]", 8900);
+        assert!(!out.iter().any(|h| h.contains("[[")), "{out:?}");
+        assert!(rmcp_would_allow(&out, "[fd7a:115c:a1e0::1]:8900"));
+    }
+
+    #[test]
+    fn loopback_still_works_and_is_not_duplicated() {
+        let out = allowed_hosts_for(loopback(), "127.0.0.1", 8900);
+        assert_eq!(out.iter().filter(|h| *h == "127.0.0.1").count(), 1);
+        assert!(rmcp_would_allow(&out, "127.0.0.1:8900"));
+    }
+
+    #[test]
+    fn an_unlisted_host_is_rejected_by_the_same_matching() {
+        // Named for what it checks: rmcp's matching, not just Vec contents.
+        let out = allowed_hosts_for(loopback(), "100.78.123.110", 8900);
+        assert!(!rmcp_would_allow(&out, "evil.example.com"));
+        assert!(!rmcp_would_allow(&out, "evil.example.com:8900"));
+        assert!(!rmcp_would_allow(&out, "100.78.123.111:8900"));
+    }
+
+    #[test]
+    fn an_empty_default_stays_empty() {
+        // rmcp reads an empty list as "host checking disabled". If an operator
+        // or a future rmcp default turns it off, this must not switch it back
+        // on with a one-entry allowlist that rejects everything else.
+        assert!(allowed_hosts_for(Vec::new(), "100.78.123.110", 8900).is_empty());
+    }
+}

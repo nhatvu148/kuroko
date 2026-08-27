@@ -15,7 +15,10 @@ use std::time::Instant;
 #[derive(Parser)]
 #[command(
     name = "wincrust",
-    about = "Elevated Windows desktop automation over MCP"
+    about = "Elevated Windows desktop automation over MCP",
+    // Taken from Cargo.toml. `wincrust --version` is the first thing anyone
+    // types after `cargo install`, and 0.1.0 answered it with a parse error.
+    version
 )]
 struct Cli {
     #[command(subcommand)]

@@ -1,6 +1,6 @@
 [package]
 name = "wincrust"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Windows desktop automation over MCP. Pure Rust, single binary, six tools, no shell."
 license = "MIT"
@@ -56,6 +56,11 @@ rmcp = { version = "3.1.4", features = [
 schemars = "1.2.2"
 axum = "0.8.9"
 unicode-normalization = "0.1"
+
+[dev-dependencies]
+# Already in the tree via axum/rmcp; named here so the host-allowlist tests can
+# parse authorities exactly the way rmcp does.
+http = "1"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = [

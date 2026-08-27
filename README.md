@@ -37,6 +37,70 @@ required. The reason is what elevation does to the cost of a large dependency tr
 No shell, no registry, no filesystem, no arbitrary process spawn. Use SSH for those — it does not
 run with an admin token.
 
+## Driving it from another machine
+
+The server has to run on Windows, because it drives a Windows desktop. The
+client does not: this is the arrangement it was built for, a Mac or Linux
+machine running the agent and a Windows box running the desktop.
+
+Two things have to be true on the Windows side, and neither is obvious.
+
+**It must run in the interactive session.** A process started over SSH lands in
+session 0, which has no desktop: `windows` returns an empty list, capture
+returns a picture of nothing, and none of it looks like an error. Task
+Scheduler is what crosses that boundary, and the same registration buys
+elevation:
+
+```powershell
+cargo install wincrust
+$key = [Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Max 256 }))
+New-Item -ItemType Directory -Force "$env:LOCALAPPDATA\wincrust" | Out-Null
+Set-Content "$env:LOCALAPPDATA\wincrust\auth-key.txt" $key -NoNewline
+
+# Read the key from the file at launch, so it never appears in the task
+# definition or in any process command line.
+@"
+@echo off
+set /p WINCRUST_AUTH_KEY=<""%LOCALAPPDATA%\wincrust\auth-key.txt""
+""%USERPROFILE%\.cargo\bin\wincrust.exe"" serve --transport http ^
+  --host <this-machine-tailscale-ip> --port 8900 ^
+  --ip-allowlist <your-client-tailscale-ip>
+"@ | Set-Content "$env:LOCALAPPDATA\wincrust\serve.cmd" -Encoding ASCII
+
+$a = New-ScheduledTaskAction -Execute "cmd.exe" -Argument "/c `"$env:LOCALAPPDATA\wincrust\serve.cmd`""
+$p = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Highest
+$s = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)
+Register-ScheduledTask -TaskName wincrust-serve -Action $a -Principal $p -Settings $s -Force
+Start-ScheduledTask -TaskName wincrust-serve
+```
+
+**`--ip-allowlist` is not optional in spirit.** A bearer token is one secret
+away from an elevated desktop, and a tailnet often contains machines belonging
+to other people. Name the client addresses; everything else is refused before
+it can present a token.
+
+Then on the client:
+
+```json
+{
+  "mcpServers": {
+    "wincrust": {
+      "type": "http",
+      "url": "http://<windows-tailscale-ip>:8900/mcp",
+      "headers": { "Authorization": "Bearer <the key from auth-key.txt>" }
+    }
+  }
+}
+```
+
+Three refusals are worth recognising, because they look alike from the client:
+
+| | meaning |
+|---|---|
+| `401` | the token is wrong or absent |
+| `403` | the source address is not in `--ip-allowlist`, **or** the `Host` header is not the address the server was told to bind |
+| empty window list, no error | the server is running in session 0 - it is not on a desktop |
+
 ## Design
 
 **One COM thread.** `IUIAutomation` and its elements are neither `Send` nor `Sync`, so they cannot
