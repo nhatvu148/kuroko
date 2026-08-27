@@ -476,8 +476,9 @@ fn is_transient(e: &windows::core::Error) -> bool {
 /// a condition. Anything still failing after that is reported as it is - a
 /// retry loop that hides a real fault is worse than the raw error it replaced.
 fn retry_transient<T>(mut f: impl FnMut() -> Result<T>) -> Result<T> {
+    const ATTEMPTS: u32 = 3;
     let mut last = None;
-    for attempt in 0..3 {
+    for attempt in 0..ATTEMPTS {
         match f() {
             Ok(v) => return Ok(v),
             Err(e) => {
@@ -489,7 +490,11 @@ fn retry_transient<T>(mut f: impl FnMut() -> Result<T>) -> Result<T> {
                 }
                 tracing::warn!("transient COM failure on attempt {}: {e}", attempt + 1);
                 last = Some(e);
-                std::thread::sleep(std::time::Duration::from_millis(120));
+                // No pause after the last attempt - there is nothing left to
+                // wait for, and it would only delay the error by 120 ms.
+                if attempt + 1 < ATTEMPTS {
+                    std::thread::sleep(std::time::Duration::from_millis(120));
+                }
             }
         }
     }
