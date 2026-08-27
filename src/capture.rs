@@ -326,16 +326,23 @@ pub fn encode_png_native(f: &Frame) -> Result<Vec<u8>> {
     encode_png(f, 0).map(|(png, _, _, _)| png)
 }
 
-/// Magnified PNG for recognition. `scale` above 1.0 enlarges; the caller is
-/// responsible for dividing the coordinates back out.
+/// Magnified PNG for recognition, and **the scale actually applied**.
+///
+/// Returning the effective scale is the point. A caller has to divide the
+/// recogniser's coordinates back out, and if it divides by a number this
+/// function did not use, every coordinate is silently wrong with no error
+/// anywhere - which is what happened when a fractional scale skipped the resize
+/// while the caller still divided by it. Handing back the real value makes the
+/// two sides impossible to disagree.
 ///
 /// Deliberately does not route through `encode_png`, whose `max_width` only
 /// ever shrinks (`f.w > max_width`) - passing a larger width there is a silent
 /// no-op, which is exactly how an "upscale" knob came to do nothing at all.
-pub fn encode_png_scaled(f: &Frame, scale: f32) -> Result<Vec<u8>> {
+pub fn encode_png_scaled(f: &Frame, scale: f32) -> Result<(Vec<u8>, f32)> {
     use image::ImageEncoder;
     if scale <= 1.0 {
-        return encode_png_native(f);
+        // 1.0, not the requested value: nothing was resized.
+        return encode_png_native(f).map(|png| (png, 1.0));
     }
     let img = image::RgbImage::from_raw(f.w, f.h, f.rgb.clone())
         .ok_or_else(|| anyhow!("frame buffer size does not match {}x{}", f.w, f.h))?;
@@ -353,7 +360,9 @@ pub fn encode_png_scaled(f: &Frame, scale: f32) -> Result<Vec<u8>> {
         h,
         image::ExtendedColorType::Rgb8,
     )?;
-    Ok(png)
+    // The real ratio, not the request: rounding to whole pixels means a 1.5x
+    // ask on an odd-width frame is not exactly 1.5x.
+    Ok((png, w as f32 / f.w as f32))
 }
 
 /// Load a PNG as a frame, so accuracy can be measured against a fixed image

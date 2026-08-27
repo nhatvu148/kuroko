@@ -139,7 +139,10 @@ pub fn find_text(args: FindArgs<'_>) -> Result<TextResult> {
         let longest = frame.w.max(frame.h) as f32;
         (max_dim / longest).clamp(1.0, 1.5)
     };
-    let png = crate::capture::encode_png_scaled(&frame, scale)?;
+    // The scale that was actually applied, which is not always the one asked
+    // for - a fractional request resizes nothing, and rounding to whole pixels
+    // shifts the ratio slightly either way.
+    let (png, scale) = crate::capture::encode_png_scaled(&frame, scale)?;
 
     // .join() blocks; this whole function runs inside spawn_blocking, so there is
     // no runtime to starve. IAsyncOperation also implements IntoFuture if this
