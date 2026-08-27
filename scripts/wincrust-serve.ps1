@@ -249,8 +249,13 @@ if (Test-Path $KeyFile) {
     $key = (Get-Content $KeyFile -Raw).Trim()
 } else {
     Write-Step 'Generating an auth key'
-    $bytes = [byte[]]::new(32)
-    [System.Security.Cryptography.RandomNumberGenerator]::Fill($bytes)
+    # RandomNumberGenerator::Fill is .NET Core only, so it throws under
+    # Windows PowerShell 5.1 - which is what `powershell` resolves to, and
+    # therefore what the Taskfile and most people actually run. Create() +
+    # GetBytes exists in both .NET Framework 4.x and .NET 5+.
+    $bytes = New-Object byte[] 32
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
     $key = [Convert]::ToBase64String($bytes)
     Set-Content -Path $KeyFile -Value $key -NoNewline -Encoding ASCII
 }
