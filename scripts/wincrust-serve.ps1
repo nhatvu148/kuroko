@@ -91,6 +91,24 @@ $LogFile  = Join-Path $Dir 'serve.log'
 function Write-Step { param([string] $m) Write-Host "==> $m" -ForegroundColor Cyan }
 function Write-Warn { param([string] $m) Write-Host "  ! $m" -ForegroundColor Yellow }
 
+function Test-TaskRegistered {
+    # Start-ScheduledTask on a task that does not exist reports "The system
+    # cannot find the file specified", which sends people looking for a missing
+    # .ps1 rather than a missing task. Check first and say what is actually
+    # wrong.
+    $null -ne (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue)
+}
+
+function Deny-NotRegistered {
+    Write-Host "The scheduled task '$TaskName' is not registered." -ForegroundColor Yellow
+    Write-Host ''
+    Write-Host '  Set it up first:'
+    Write-Host "    .\scripts\wincrust-serve.ps1 -ClientIp <your-client-tailscale-ip>"
+    Write-Host '  or:'
+    Write-Host '    task setup CLIENT_IP=<your-client-tailscale-ip>'
+    exit 1
+}
+
 function Stop-Server {
     # Unregistering the task does NOT stop a running server, and the running
     # server holds serve.log open - which is why a plain Remove-Item on the
@@ -112,8 +130,12 @@ if ($Status) {
     $listen = Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
         Where-Object { $_.OwningProcess -and $p -and $_.OwningProcess -eq $p.Id } | Select-Object -First 1
     if ($listen) { Write-Host "listening on $($listen.LocalAddress):$($listen.LocalPort)" }
-    Get-ScheduledTaskInfo -TaskName $TaskName -ErrorAction SilentlyContinue |
-        Format-List TaskName, LastRunTime, LastTaskResult, NumberOfMissedRuns
+    if (Test-TaskRegistered) {
+        Get-ScheduledTaskInfo -TaskName $TaskName -ErrorAction SilentlyContinue |
+            Format-List TaskName, LastRunTime, LastTaskResult, NumberOfMissedRuns
+    } else {
+        Write-Host "scheduled task '$TaskName' is not registered - run setup to create it"
+    }
     return
 }
 
@@ -123,12 +145,31 @@ if ($Logs) {
 }
 
 if ($Start) {
+    if (-not (Test-TaskRegistered)) { Deny-NotRegistered }
     Start-ScheduledTask -TaskName $TaskName
-    Write-Host "started $TaskName"
+    # Started is not running: the task can launch and the server still fail.
+    $p = $null
+    foreach ($i in 1..12) {
+        Start-Sleep -Seconds 1
+        $p = Get-Process wincrust -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($p) { break }
+    }
+    if ($p) {
+        Write-Host "started - running in session $($p.SessionId)"
+        if ($p.SessionId -eq 0) {
+            Write-Warn 'SESSION 0: it will bind and return an empty window list forever.'
+        }
+    } else {
+        Write-Warn 'Task started but no wincrust process appeared. Last lines of the log:'
+        if (Test-Path $LogFile) { Get-Content $LogFile -Tail 10 | ForEach-Object { "    $_" } }
+        Write-Warn 'If you are on SSH, the task cannot start until you are logged in at the desktop.'
+        exit 1
+    }
     return
 }
 
 if ($Stop) {
+    if (-not (Test-TaskRegistered)) { Deny-NotRegistered }
     Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
     Stop-Server
     Write-Host "stopped $TaskName"
