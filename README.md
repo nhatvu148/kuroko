@@ -45,6 +45,13 @@ machine running the agent and a Windows box running the desktop.
 
 Two things have to be true on the Windows side, and neither is obvious.
 
+There is a script in the repo that does all of it -
+[`scripts/wincrust-serve.ps1`](scripts/wincrust-serve.ps1), or `task setup
+CLIENT_IP=<your-client-tailscale-ip>` if you use [Task](https://taskfile.dev).
+It is not shipped in the published crate, which stays a single binary and
+nothing else. What follows is what the script does, because the two things it
+gets right are the two things that are easy to get wrong by hand.
+
 **It must run in the interactive session.** A process started over SSH lands in
 session 0, which has no desktop: `windows` returns an empty list, capture
 returns a picture of nothing, and none of it looks like an error. Task
@@ -78,6 +85,11 @@ Start-ScheduledTask -TaskName wincrust-serve
 away from an elevated desktop, and a tailnet often contains machines belonging
 to other people. Name the client addresses; everything else is refused before
 it can present a token.
+
+Register it with `powershell.exe -WindowStyle Hidden`, not `cmd.exe /c`. An
+interactive task with a console action puts a visible window on the desktop,
+and a visible window gets closed - which surfaces later as a server that died
+with exit code `0xC000013A`, which is Ctrl+C.
 
 Then on the client:
 

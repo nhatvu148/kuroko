@@ -1,0 +1,148 @@
+# go-task runner: https://taskfile.dev
+#
+# Most of these are thin wrappers over cargo and exist so the CI checks can be
+# run in one command locally, in the same order CI runs them. The `serve:*` and
+# `setup` tasks are Windows-only, because the thing being served is a Windows
+# desktop.
+version: '3'
+
+vars:
+  TASK_NAME: wincrust-serve
+  PORT: '{{.PORT | default "8900"}}'
+  # CLIENT_IP is deliberately NOT defaulted here. `requires` checks that a
+  # variable is set, not that it is non-empty, so a default of "" would make
+  # the guard pass and hand an empty -ClientIp to the script.
+
+tasks:
+  default:
+    desc: List available tasks
+    silent: true
+    cmds:
+      - task --list
+
+  # --- the checks CI runs, in CI's order ------------------------------------
+
+  fmt:
+    desc: Format
+    cmds:
+      - cargo fmt --all
+
+  fmt:check:
+    desc: Check formatting without changing anything
+    cmds:
+      - cargo fmt --all -- --check
+
+  lint:
+    desc: Clippy, warnings denied
+    cmds:
+      - cargo clippy --all-targets -- -D warnings
+
+  test:
+    desc: Run the test suite
+    cmds:
+      - cargo test --all
+
+  build:
+    desc: Release build
+    cmds:
+      - cargo build --release
+
+  ci:
+    desc: Everything CI runs, in the same order
+    cmds:
+      - task: fmt:check
+      - task: lint
+      - task: test
+      - task: build
+      - task: size
+
+  size:
+    desc: Check the binary against the 12 MB ceiling CI enforces
+    platforms: [windows]
+    cmds:
+      - powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/check-size.ps1
+
+  arm64:
+    desc: Cross-compile check for Windows on ARM
+    cmds:
+      - rustup target add aarch64-pc-windows-msvc
+      - cargo check --all-targets --target aarch64-pc-windows-msvc
+
+  # --- running it ------------------------------------------------------------
+
+  windows:
+    desc: List top-level windows (quick check that UIA sees a desktop)
+    platforms: [windows]
+    cmds:
+      - cargo run --release --quiet -- windows
+
+  displays:
+    desc: Show displays, DPI awareness and real scale factors
+    platforms: [windows]
+    cmds:
+      - cargo run --release --quiet -- displays
+
+  serve:stdio:
+    desc: Run as an MCP server over stdio (for a local client)
+    platforms: [windows]
+    cmds:
+      - cargo run --release --quiet -- serve --transport stdio
+
+  # --- the desktop server ----------------------------------------------------
+
+  setup:
+    desc: 'Install and register the desktop server. Requires CLIENT_IP=<tailscale ip>'
+    platforms: [windows]
+    requires:
+      vars: [CLIENT_IP]
+    cmds:
+      - >-
+        powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/wincrust-serve.ps1 -ClientIp {{.CLIENT_IP}} -Port {{.PORT}}
+
+  setup:rotate:
+    desc: 'Rotate the auth key and re-register. Every client will need reconfiguring.'
+    platforms: [windows]
+    requires:
+      vars: [CLIENT_IP]
+    cmds:
+      - >-
+        powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/wincrust-serve.ps1 -ClientIp {{.CLIENT_IP}} -Port {{.PORT}} -RotateKey
+
+  teardown:
+    desc: Remove the scheduled task, config and key (leaves the binary)
+    platforms: [windows]
+    cmds:
+      - >-
+        powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/wincrust-serve.ps1 -Uninstall
+
+  start:
+    desc: Start the desktop server
+    platforms: [windows]
+    cmds:
+      - powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/wincrust-serve.ps1 -Start
+
+  stop:
+    desc: Stop the desktop server
+    platforms: [windows]
+    cmds:
+      - powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/wincrust-serve.ps1 -Stop
+
+  status:
+    desc: Is it running, and in which session?
+    platforms: [windows]
+    cmds:
+      - powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/wincrust-serve.ps1 -Status
+
+  logs:
+    desc: Tail the server log
+    platforms: [windows]
+    cmds:
+      - powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/wincrust-serve.ps1 -Logs
+
+  # --- release ---------------------------------------------------------------
+
+  publish:dry:
+    desc: Package without uploading, and list exactly what would ship
+    cmds:
+      - cargo package --list
+      - cargo publish --dry-run
