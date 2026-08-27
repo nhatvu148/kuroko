@@ -101,8 +101,19 @@ pub fn session_is_locked() -> bool {
 /// the compositor and not the read.
 ///
 /// `PW_RENDERFULLCONTENT` asks the window to render itself, that content
-/// included. It is not universal - some applications still return blank - so
-/// the caller is told which path produced an image rather than left to assume.
+/// included. It is the cheap candidate and it is worth having, but it is NOT a
+/// general fix and must not be described as one:
+///
+/// **Measured on the viewport above, it changed nothing.** Both paths returned
+/// the same flat 207,221,238 at the same screen points. An application that
+/// renders through its own swap chain and never services a `WM_PRINT` for that
+/// region is not obliged to produce anything here, and this one does not.
+///
+/// It does help applications that draw through a path `PrintWindow` can drive,
+/// which is why it stays. The honest framing is: try it, do not rely on it. A
+/// general fix means capturing the presentation surface itself - DXGI desktop
+/// duplication or Windows.Graphics.Capture - which is a different and much
+/// larger piece of work.
 #[cfg(windows)]
 pub fn capture_window(hwnd: isize) -> Result<Frame> {
     use windows::Win32::Foundation::{HWND, RECT};

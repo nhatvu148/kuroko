@@ -86,10 +86,16 @@ pub struct ObserveParams {
     pub max_width: Option<u32>,
     /// Render this window on demand instead of reading the desktop.
     ///
-    /// Use it whenever the target draws with OpenGL or Direct3D - a CAD or
-    /// simulation viewport, a game, a video pane. A screen read returns those
-    /// regions as flat clear colour, which is indistinguishable from an empty
-    /// viewport and has been mistaken for one.
+    /// Worth trying whenever the target draws with OpenGL or Direct3D - a CAD
+    /// or simulation viewport, a game, a video pane. A screen read returns
+    /// those regions as flat clear colour, indistinguishable from an empty
+    /// viewport, and it has been mistaken for one.
+    ///
+    /// It is not a guaranteed fix. On at least one OpenGL viewport it was
+    /// measured to change nothing: both paths returned identical flat pixels.
+    /// If that happens, the content is there and this route cannot read it -
+    /// which is a different statement from "the viewport is empty", and the
+    /// difference matters.
     pub hwnd: Option<isize>,
 }
 
@@ -293,7 +299,11 @@ impl Wincrust {
                        returns nothing at all when the screen has not changed. WITHOUT `hwnd` this \
                        reads the desktop, which does NOT contain hardware-accelerated content: an \
                        OpenGL or Direct3D viewport comes back as flat colour that looks exactly \
-                       like an empty one. Pass `hwnd` to render that window on demand instead."
+                       like an empty one. `hwnd` renders that window on demand instead, which \
+                       helps SOME applications and is measured as changing nothing on at least \
+                       one OpenGL viewport - try it, do not rely on it. If both come back flat, \
+                       the content is real and unreadable by this route: do not report the \
+                       viewport as empty."
     )]
     async fn observe(
         &self,
