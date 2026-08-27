@@ -468,6 +468,11 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
             UIA_ControlTypePropertyId,
             UIA_BoundingRectanglePropertyId,
             UIA_ProcessIdPropertyId,
+            // Required by selector matching. An uncached property errors, and
+            // `unwrap_or_default()` turns that into an empty string - so
+            // omitting it here does not fail loudly, it just makes every
+            // automation_id selector silently never match.
+            UIA_AutomationIdPropertyId,
         ] {
             nav.AddProperty(prop)?;
         }
