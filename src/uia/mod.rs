@@ -122,6 +122,16 @@ pub struct ActResult {
     pub status: String,
     /// How the element was located: "path", "selector" or "ocr".
     pub resolved_by: String,
+    /// How closely the caller's name matched the one Windows reported, when a
+    /// name was involved at all.
+    ///
+    /// `exact` and `case` mean the label was found as written. Anything looser
+    /// means this crate had to reshape one side to make them meet - folding
+    /// Unicode composition, half-width forms, or a localised mnemonic like the
+    /// `(F)` in `ファイル(F)` - and a caller pinning down a flaky selector
+    /// wants to know that happened.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched_by: Option<crate::text::MatchTier>,
     /// Only on the OCR path, and only for a click that was actually sent.
     ///
     /// A control pattern is a contract with the control; a coordinate click is
@@ -151,9 +161,25 @@ pub struct ActResult {
 /// where these fields are checked by the schema.
 #[derive(Debug, Clone, Default, Deserialize, JsonSchema)]
 pub struct Selector {
-    /// Exact, case-insensitive.
+    /// The visible label, matched leniently but in strict order.
+    ///
+    /// An exact match is tried first; failing that, Unicode case; failing
+    /// that, NFKC and whitespace normalisation, which is what makes `Tệp`
+    /// typed on macOS (NFD) meet the same word reported by Windows (NFC) and
+    /// full-width `Ａ１` meet `A1`; failing that, decoration is stripped, so
+    /// `ファイル` matches the `ファイル(F)` a localised menu actually reports.
+    ///
+    /// Only the tightest tier that matched anything is kept, so leniency can
+    /// never turn a selector that used to resolve one element into
+    /// `ambiguous`. The result reports which tier was used as `matched_by`.
+    ///
+    /// A localised UI is the case this is for, and it is worth preferring
+    /// `automation_id` there anyway: labels get translated, identifiers do not.
     pub name: Option<String>,
-    /// Exact, case-sensitive - automation ids are identifiers, not labels.
+    /// Exact, case-sensitive, byte for byte - automation ids are identifiers,
+    /// not labels, and are stable across locales precisely because no
+    /// translator touches them. Prefer this to `name` wherever a control has
+    /// one.
     pub automation_id: Option<String>,
     /// As reported by `discover`, e.g. "button", "menu item".
     pub control_type: Option<String>,

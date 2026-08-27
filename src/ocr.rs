@@ -10,6 +10,7 @@
 //! binary. Bundling Tesseract or an ONNX model would undo the single-binary
 //! property that is half the point of this crate.
 
+use crate::text::MatchTier;
 use anyhow::{anyhow, Result};
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -25,6 +26,10 @@ pub struct TextMatch {
     pub h: i32,
     /// "word" when a single token matched, "line" when the query spans words.
     pub granularity: String,
+    /// How much leniency this match needed. `confusable` means it survived
+    /// only by folding characters the recogniser mixes up, which is the
+    /// weakest evidence this module produces.
+    pub matched_by: MatchTier,
 }
 
 #[derive(Debug, Clone, Serialize, JsonSchema)]
@@ -32,6 +37,10 @@ pub struct TextResult {
     /// The recognizer language actually used. OCR quality depends on which
     /// language packs are installed, so a caller should be able to see it.
     pub language: String,
+    /// Every recognizer language installed on this machine. Reported on every
+    /// call because a caller cannot otherwise tell "the text is not there"
+    /// from "this machine cannot read that script".
+    pub available_languages: Vec<String>,
     pub matches: Vec<TextMatch>,
     /// Total lines recognised, so an empty match set can be told apart from
     /// an empty screen.
@@ -66,9 +75,20 @@ fn fold_confusables(s: &str) -> String {
 }
 
 /// Case-insensitive substring, tolerant of the glyph confusions above.
-fn matches_text(haystack: &str, needle: &str) -> bool {
-    haystack.to_lowercase().contains(needle)
-        || fold_confusables(haystack).contains(&fold_confusables(needle))
+/// The tightest tier at which `needle` appears inside `haystack`, or `None`.
+///
+/// The locale ladder runs first and unchanged; confusable folding is appended
+/// below it as OCR's own last resort, because misreading `I` as `1` is a fact
+/// about pixels rather than about language. Running it on already-normalised
+/// text is what lets the two compose: a full-width Japanese digit reaches the
+/// confusable table as an ASCII one.
+fn matches_text(haystack: &str, needle: &str) -> Option<MatchTier> {
+    if let Some(t) = crate::text::contains_tier(haystack, needle) {
+        return Some(t);
+    }
+    let hay = fold_confusables(&crate::text::normalize(haystack));
+    let ndl = fold_confusables(&crate::text::normalize(needle));
+    (!ndl.is_empty() && hay.contains(&ndl)).then_some(MatchTier::Confusable)
 }
 
 pub struct FindArgs<'a> {
@@ -87,10 +107,20 @@ pub struct FindArgs<'a> {
     pub image: Option<&'a std::path::Path>,
     /// Pixel preparation before recognition.
     pub prep: crate::capture::Prep,
+    /// BCP-47 tag of the recognizer to use, e.g. `ja`, `de-DE`.
+    ///
+    /// The default follows the *user profile's* languages, which is the wrong
+    /// guess whenever the profile and the application disagree - an en-US
+    /// profile running Japanese CAE software recognises kana as Latin noise
+    /// and returns confident nonsense. That failure is silent, so the caller
+    /// needs a way to override it and a way to see what was available.
+    pub lang: Option<&'a str>,
 }
 
 #[cfg(windows)]
 pub fn find_text(args: FindArgs<'_>) -> Result<TextResult> {
+    use windows::core::HSTRING;
+    use windows::Globalization::Language;
     use windows::Graphics::Imaging::BitmapDecoder;
     use windows::Media::Ocr::OcrEngine;
     use windows::Storage::Streams::{DataWriter, InMemoryRandomAccessStream};
@@ -165,8 +195,35 @@ pub fn find_text(args: FindArgs<'_>) -> Result<TextResult> {
         decoder.GetSoftwareBitmapAsync()?.join()?
     };
 
-    let engine = OcrEngine::TryCreateFromUserProfileLanguages()
-        .map_err(|e| anyhow!("no OCR engine for this profile's languages: {e}"))?;
+    // Enumerated first so a failed request can name the alternatives instead
+    // of just refusing: "no pack for ja" is far less useful than a list.
+    let available: Vec<String> = OcrEngine::AvailableRecognizerLanguages()
+        .ok()
+        .map(|langs| {
+            langs
+                .into_iter()
+                .filter_map(|l| l.LanguageTag().ok().map(|t| t.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let engine = match args.lang {
+        Some(tag) => {
+            let language = Language::CreateLanguage(&HSTRING::from(tag))
+                .map_err(|e| anyhow!("{tag:?} is not a valid BCP-47 language tag: {e}"))?;
+            OcrEngine::TryCreateFromLanguage(&language)
+                .ok()
+                .ok_or_else(|| {
+                    anyhow!(
+                        "no OCR language pack for {tag:?}. Installed: [{}]. \
+                     Add one under Settings > Time & language > Language & region.",
+                        available.join(", ")
+                    )
+                })?
+        }
+        None => OcrEngine::TryCreateFromUserProfileLanguages()
+            .map_err(|e| anyhow!("no OCR engine for this profile's languages: {e}"))?,
+    };
     let language = engine
         .RecognizerLanguage()
         .and_then(|l| l.DisplayName())
@@ -177,10 +234,9 @@ pub fn find_text(args: FindArgs<'_>) -> Result<TextResult> {
     let lines = result.Lines()?;
     let lines_seen = lines.Size()? as usize;
 
-    let needle = args
-        .query
-        .map(|q| q.trim().to_lowercase())
-        .unwrap_or_default();
+    // Deliberately not lowercased here: `matches_text` needs the caller's text
+    // as written to tell an exact match from a case-folded one.
+    let needle = args.query.map(|q| q.trim().to_string()).unwrap_or_default();
     let multiword = needle.split_whitespace().count() > 1;
     let (ox, oy) = frame.origin;
     // OCR ran on a magnified image, so every box it reports is in that space.
@@ -196,7 +252,8 @@ pub fn find_text(args: FindArgs<'_>) -> Result<TextResult> {
         // A multi-word query is matched against the line, because word boxes
         // cannot express a phrase. A single token is matched per word, which
         // gives a far tighter click target than the whole line.
-        if needle.is_empty() || (multiword && matches_text(&line_text, &needle)) {
+        let line_tier = matches_text(&line_text, &needle);
+        if needle.is_empty() || (multiword && line_tier.is_some()) {
             let words = line.Words()?;
             // Checked before the subtraction, not inside the tuple below: both
             // operands of a tuple literal are evaluated before any pattern can
@@ -220,6 +277,7 @@ pub fn find_text(args: FindArgs<'_>) -> Result<TextResult> {
                     w,
                     h,
                     granularity: "line".into(),
+                    matched_by: line_tier.unwrap_or(MatchTier::Exact),
                 });
             }
             continue;
@@ -233,7 +291,7 @@ pub fn find_text(args: FindArgs<'_>) -> Result<TextResult> {
                 break;
             }
             let wt = word.Text()?.to_string();
-            if matches_text(&wt, &needle) {
+            if let Some(tier) = matches_text(&wt, &needle) {
                 let r = word.BoundingRect()?;
                 let (x, y, w, h) = (
                     unscale(r.X as f64),
@@ -249,13 +307,21 @@ pub fn find_text(args: FindArgs<'_>) -> Result<TextResult> {
                     w,
                     h,
                     granularity: "word".into(),
+                    matched_by: tier,
                 });
             }
         }
     }
 
+    // Deliberately NOT narrowed to the best tier here. `find_text` is a survey
+    // of the screen and is documented to return every occurrence, so ranking
+    // globally would drop a real match at one location merely because a
+    // tighter one exists somewhere else entirely. Each match carries its tier
+    // instead, and the caller that needs a single target - `ocr_fallback` -
+    // narrows there, where "one match" is actually the requirement.
     Ok(TextResult {
         language,
+        available_languages: available,
         matches,
         lines_seen,
         scale,
@@ -282,21 +348,21 @@ mod tests {
 
     #[test]
     fn matches_through_a_digit_letter_confusion() {
-        assert!(matches_text("Steps (I)", "steps (1)"));
-        assert!(matches_text("Model-I", "model-1"));
-        assert!(matches_text("Job-l", "job-1"));
+        assert!(matches_text("Steps (I)", "steps (1)").is_some());
+        assert!(matches_text("Model-I", "model-1").is_some());
+        assert!(matches_text("Job-l", "job-1").is_some());
     }
 
     #[test]
     fn exact_matching_still_works() {
-        assert!(matches_text("Materials", "materials"));
-        assert!(matches_text("Assembly", "assem"));
+        assert!(matches_text("Materials", "materials").is_some());
+        assert!(matches_text("Assembly", "assem").is_some());
     }
 
     /// Folding must not collapse genuinely different words into each other.
     #[test]
     fn does_not_match_unrelated_text() {
-        assert!(!matches_text("Materials", "assembly"));
-        assert!(!matches_text("Parts", "loads"));
+        assert!(matches_text("Materials", "assembly").is_none());
+        assert!(matches_text("Parts", "loads").is_none());
     }
 }

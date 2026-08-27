@@ -47,3 +47,20 @@ jobs:
           # Single-binary deployment is a stated goal; a jump here means a
           # dependency crept in that undercuts the reason this exists.
           if ($mb -gt 12) { throw "binary grew past 12 MB ($([math]::Round($mb,2)) MB)" }
+
+  # Windows on ARM is a real deployment target and nothing here is
+  # architecture-specific - no intrinsics, no assembly - so the risk is a
+  # dependency that fails to cross-compile rather than our own code. A check
+  # catches that; running the suite would need an ARM64 runner, and the tests
+  # that matter (text matching, coordinate arithmetic, the estop state machine)
+  # are pure arithmetic whose behaviour does not vary by architecture.
+  arm64:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+      - name: check aarch64
+        run: cargo check --all-targets --target aarch64-pc-windows-msvc

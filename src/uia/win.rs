@@ -6,6 +6,7 @@ use super::{
     Selector, WindowInfo,
 };
 use crate::lease::{now, Scope};
+use crate::text::MatchTier;
 use anyhow::{anyhow, Result};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -402,6 +403,28 @@ fn generation_of(w: &WindowInfo) -> u64 {
     h.finish()
 }
 
+/// The same as [`guard!`], for failures that happen *after* an element was
+/// found. These carry `matched_by`, because "found it, but it is disabled" is
+/// a different situation from "no such element" and the status alone cannot
+/// tell them apart. It also makes the match ladder observable without
+/// performing an action: asking a control for a pattern it does not have
+/// resolves the selector, reports the tier, and changes nothing.
+macro_rules! guard_found {
+    ($status:expr, $action:expr, $target:expr, $t0:expr, $detail:expr, $by:expr, $tier:expr) => {
+        return Ok(ActResult {
+            ok: false,
+            action: $action.to_string(),
+            status: $status.to_string(),
+            target: $target,
+            resolved_by: $by.to_string(),
+            matched_by: $tier,
+            screen_changed: None,
+            detail: Some($detail),
+            elapsed_ms: $t0.elapsed().as_secs_f64() * 1000.0,
+        })
+    };
+}
+
 macro_rules! guard {
     ($status:expr, $action:expr, $target:expr, $t0:expr, $detail:expr, $by:expr) => {
         return Ok(ActResult {
@@ -410,6 +433,7 @@ macro_rules! guard {
             status: $status.to_string(),
             target: $target,
             resolved_by: $by.to_string(),
+            matched_by: None,
             detail: Some($detail),
             // The UIA path has real perception guards; this field exists for
             // the coordinate path, which has none.
@@ -541,11 +565,17 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
 
         // Guard 2: does the path still lead somewhere?
         let mut el = cached.clone();
+        // Set only on the selector branch; an index path involves no name.
+        let mut matched_by: Option<MatchTier> = None;
 
         if by == "selector" {
             let sel = args.select.as_ref().expect("selector present");
-            let mut hits: Vec<(IUIAutomationElement, String)> = Vec::new();
+            let mut hits: Vec<(IUIAutomationElement, String, MatchTier)> = Vec::new();
             collect_matches(&cached, sel, &mut hits)?;
+            // Keep only the tightest tier that matched anything. Without this,
+            // adding leniency would turn selectors that used to resolve one
+            // element into `ambiguous` as soon as a looser sibling existed.
+            crate::text::keep_best(&mut hits, |h| h.2);
             match hits.len() {
                 0 => guard!(
                     "not_found",
@@ -560,23 +590,27 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
                     // Never guess. Two matching buttons means the caller was not
                     // specific enough, and quietly taking the first is precisely
                     // how automation clicks the wrong thing.
-                    let names: Vec<&str> = hits.iter().take(4).map(|(_, n)| n.as_str()).collect();
+                    let names: Vec<&str> =
+                        hits.iter().take(4).map(|(_, n, _)| n.as_str()).collect();
                     guard!(
                         "ambiguous",
                         args.action,
                         win.name.clone(),
                         t0,
                         format!(
-                            "{n} elements match {} ({}). Add automation_id or control_type.",
+                            "{n} elements match {} at the {} tier ({}). Add automation_id \
+                             or control_type.",
                             sel.describe(),
+                            hits[0].2.as_str(),
                             names.join(", ")
                         ),
                         by
                     )
                 }
             }
-            let found = hits.remove(0).0;
-            el = found.BuildUpdatedCache(&leaf)?;
+            let hit = hits.remove(0);
+            matched_by = Some(hit.2);
+            el = hit.0.BuildUpdatedCache(&leaf)?;
         } else {
             let last = args.path.len().saturating_sub(1);
             for (i, idx) in args.path.iter().enumerate() {
@@ -617,23 +651,25 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
 
         // Guard 3: is it in a state where acting makes sense?
         if !el.CachedIsEnabled().map(|b| b.as_bool()).unwrap_or(true) {
-            guard!(
+            guard_found!(
                 "disabled",
                 args.action,
                 target,
                 t0,
                 "control is disabled".to_string(),
-                by
+                by,
+                matched_by
             );
         }
         if el.CachedIsOffscreen().map(|b| b.as_bool()).unwrap_or(false) {
-            guard!(
+            guard_found!(
                 "moved",
                 args.action,
                 target,
                 t0,
                 "control is offscreen".to_string(),
-                by
+                by,
+                matched_by
             );
         }
 
@@ -660,32 +696,35 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
             "select" => el
                 .GetCachedPatternAs::<IUIAutomationSelectionItemPattern>(UIA_SelectionItemPatternId)
                 .map(|p| p.Select().map(|_| "selected".to_string())),
-            other => guard!(
+            other => guard_found!(
                 "pattern_gone",
                 args.action,
                 target,
                 t0,
                 format!("unknown action '{other}'"),
-                by
+                by,
+                matched_by
             ),
         };
 
         match ok_detail {
-            Err(_) => guard!(
+            Err(_) => guard_found!(
                 "pattern_gone",
                 args.action,
                 target,
                 t0,
                 format!("control no longer supports '{}'", args.action),
-                by
+                by,
+                matched_by
             ),
-            Ok(Err(e)) => guard!(
+            Ok(Err(e)) => guard_found!(
                 "pattern_gone",
                 args.action,
                 target,
                 t0,
                 format!("pattern call failed: {e}"),
-                by
+                by,
+                matched_by
             ),
             Ok(Ok(detail)) => Ok(ActResult {
                 ok: true,
@@ -693,6 +732,7 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
                 status: "ok".to_string(),
                 target,
                 resolved_by: by.to_string(),
+                matched_by,
                 screen_changed: None,
                 detail: Some(detail),
                 elapsed_ms: t0.elapsed().as_secs_f64() * 1000.0,
@@ -709,7 +749,7 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
 unsafe fn collect_matches(
     el: &IUIAutomationElement,
     sel: &Selector,
-    out: &mut Vec<(IUIAutomationElement, String)>,
+    out: &mut Vec<(IUIAutomationElement, String, MatchTier)>,
 ) -> Result<()> {
     // A cap, because a runaway tree should degrade into "ambiguous" rather than
     // spending a minute proving it.
@@ -723,19 +763,23 @@ unsafe fn collect_matches(
         .unwrap_or_default();
     let ct = control_type_name(el.CachedControlType().unwrap_or(UIA_CONTROLTYPE_ID(0)));
 
-    // Name is compared case-insensitively because it is a display label;
-    // automation_id is not, because it is an identifier.
-    let ok = sel
-        .name
+    // Name goes through the locale ladder in `crate::text`, which carries back
+    // how much leniency it needed. A selector with no name constrains nothing,
+    // so it contributes the tightest tier rather than excluding the element.
+    let name_tier = match sel.name.as_ref() {
+        None => Some(MatchTier::Exact),
+        Some(n) => crate::text::tier_of(&name, n),
+    };
+    // automation_id is compared byte for byte: it is an identifier rather than
+    // a label, and it is stable across locales precisely because no translator
+    // ever touches it. control_type is this crate's own ASCII vocabulary.
+    let ok_id = sel.automation_id.as_ref().is_none_or(|a| *a == aid);
+    let ok_ct = sel
+        .control_type
         .as_ref()
-        .is_none_or(|n| n.eq_ignore_ascii_case(name.trim()))
-        && sel.automation_id.as_ref().is_none_or(|a| *a == aid)
-        && sel
-            .control_type
-            .as_ref()
-            .is_none_or(|c| c.eq_ignore_ascii_case(&ct));
-    if ok {
-        out.push((el.clone(), name));
+        .is_none_or(|c| c.eq_ignore_ascii_case(&ct));
+    if let (Some(tier), true, true) = (name_tier, ok_id, ok_ct) {
+        out.push((el.clone(), name, tier));
     }
 
     if let Ok(kids) = el.GetCachedChildren() {
