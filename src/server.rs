@@ -535,7 +535,11 @@ impl Wincrust {
     #[tool(
         name = "launch",
         description = "Start an application. Only names present in the server's launch allowlist \
-                       are permitted; there is no way to run an arbitrary command."
+                       are permitted; there is no way to run an arbitrary command. The name must \
+                       ALSO be one Windows can resolve - on PATH, or registered under App Paths - \
+                       otherwise give the full path to the .exe. Being allowlisted and being \
+                       resolvable are two separate things, and passing the first says nothing \
+                       about the second."
     )]
     async fn launch(
         &self,
@@ -549,7 +553,9 @@ impl Wincrust {
             return Err(McpError::invalid_params(
                 format!(
                     "'{}' is not in the launch allowlist ({} entries). Add it to \
-                     %LOCALAPPDATA%\\wincrust\\launch-allowlist.txt on the host.",
+                     %LOCALAPPDATA%\\wincrust\\launch-allowlist.txt on the host - and use the \
+                     full path to the .exe unless the name is on PATH or registered under App \
+                     Paths, since an allowlisted name Windows cannot resolve will still fail.",
                     p.name,
                     self.allowlist.len()
                 ),

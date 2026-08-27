@@ -99,6 +99,14 @@ Do not report success from `ok: true` alone.
   file is empty until someone fills it. If a name is refused, say so and name
   the file - `%LOCALAPPDATA%\wincrust\launch-allowlist.txt`, or re-run setup
   with `-Allow <name>`. Do not look for another way to start a process.
+  Allowlisted is not the same as resolvable: Windows finds a bare name only on
+  `PATH` or under `App Paths`, so anything under `Program Files` needs its full
+  path. A name that is permitted but unresolvable fails while looking allowed.
+  Prefer an application's own launcher script over the `.exe` beneath it - it
+  usually sets an environment the exe needs.
+- **`launch` does not promise a *fresh* application.** Windows 11 Notepad
+  restores unsaved tabs, so a launch can surface someone's in-progress work.
+  Do not type into, save or close what you find there.
 - **A locked session** returns the lock screen, so capture and OCR refuse
   rather than returning a picture of nothing. The machine has to be unlocked.
 

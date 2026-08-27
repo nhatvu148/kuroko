@@ -329,9 +329,25 @@ if ($Allow) {
         Select-Object -Unique
     Write-Step "Writing $AllowFile"
     $header = @(
-        '# Applications `launch` may start. One name per line; # comments.',
-        '# Matched exactly and case-insensitively - there is no way to run an',
-        '# arbitrary command, and an absent or empty file permits nothing.'
+        '# Applications `launch` may start. One entry per line; # comments.',
+        '# Matched exactly and case-insensitively against what the caller asks',
+        '# for - there is no way to run an arbitrary command, and an absent or',
+        '# empty file permits nothing.',
+        '#',
+        '# An entry must ALSO be something Windows can resolve. A bare name works',
+        '# only if it is on PATH or registered under App Paths - true of notepad',
+        '# and of surprisingly little else. Anything installed under Program',
+        '# Files needs its FULL PATH, unquoted, on its own line:',
+        '#',
+        '#   notepad',
+        '#   C:\Program Files\Vendor\App\Launch.bat',
+        '#',
+        '# Prefer the launcher the application ships (often a .bat that sets up',
+        '# its environment) over the .exe underneath it. Starting the exe',
+        '# directly skips that setup and can bring the app up subtly wrong.',
+        '#',
+        '# A name that is allowlisted but unresolvable is permitted and still',
+        '# fails, which looks like success right up until nothing appears.'
     )
     Set-Content -Path $AllowFile -Value ($header + $names) -Encoding ASCII
     Write-Host "  permitted: $($names -join ', ')"

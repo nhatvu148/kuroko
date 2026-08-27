@@ -138,6 +138,41 @@ Expect a clean `not_found` - the target is genuinely absent. Distinct from
 `error`, which means the lookup itself failed and says nothing about the
 target. A caller that retries on one should not retry on the other.
 
+### Starting an application
+
+> Launch Notepad on my Windows machine.
+
+`launch` is the only tool here that starts a process, so it fails closed: with
+no allowlist file, or an empty one, it permits nothing. That is deliberate, and
+it means `launch` does nothing useful until someone fills the file -
+`%LOCALAPPDATA%\wincrust\launch-allowlist.txt`, one name per line, or
+`-Allow name1,name2` when running the setup script.
+
+**Being allowlisted and being resolvable are two separate things.** The
+allowlist decides whether the call is permitted; Windows then has to find the
+application. A name resolves only if it is on `PATH` or registered under
+`App Paths` in the registry - which is true of `notepad` and surprisingly
+little else. Anything installed under `Program Files` with no PATH entry needs
+its **full path** as the allowlist entry.
+
+That distinction is worth stating because getting it wrong looks like success:
+the allowlist accepts the name, and the launch fails anyway. If several
+installed versions share an executable name, a bare name is ambiguous even
+when it does resolve, and the full path is the only unambiguous answer.
+
+**Prefer the launcher an application ships over the executable underneath it.**
+Engineering software frequently starts through a `.bat` that sets a dozen
+environment variables first - solver paths, schema directories, plugin
+directories. Allowlisting the `.exe` skips all of that and brings the
+application up subtly wrong rather than not at all, which is harder to
+diagnose than a refusal.
+
+**`launch` starts an application; it does not promise a fresh one.** Windows 11
+Notepad restores its previous tabs, including unsaved ones, so a launch can
+surface somebody's in-progress work. Nothing here has gone wrong - it is what
+starting that application does - but a tool whose contract reads "start an
+app" can be surprising the first time it reopens a buffer from days ago.
+
 ## Reading the result
 
 `act` returns more than success or failure.
@@ -167,6 +202,8 @@ target. A caller that retries on one should not retry on the other.
 | `403` | source IP not in `--ip-allowlist`, or the `Host` header is not the address the server was told to bind |
 | connects, but zero windows | the server is in session 0 - it was not started through the scheduled task |
 | OCR says "the session is locked" | the machine is locked; a capture there returns the lock screen |
+| `launch` refuses | the name is not in the allowlist — the message reports how many entries were loaded, so `0 entries` means the file is missing or empty |
+| `launch` is permitted but nothing starts | the name is allowlisted but Windows cannot resolve it; use the full path to the .exe |
 | every `act` refuses | the emergency stop is engaged - see the README |
 
 `task status` reports which session it is in. `task logs` tails the server log.
