@@ -1,6 +1,6 @@
 [package]
 name = "wincrust"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Windows desktop automation over MCP. Pure Rust, single binary, six tools, no shell."
 license = "MIT"

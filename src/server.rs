@@ -387,6 +387,35 @@ pub async fn serve(
     }
 }
 
+/// The `Host` header values this server accepts.
+///
+/// rmcp validates the inbound `Host` against an allowlist defaulting to
+/// loopback only, as protection against DNS rebinding: a page in a browser can
+/// be tricked into resolving an attacker's name to 127.0.0.1 and talking to a
+/// local server, and the `Host` header is what gives that away.
+///
+/// That default is right for a server that only ever listens on localhost, and
+/// wrong for this one, whose entire remote story is binding a Tailscale
+/// address. Passing the default through meant every non-loopback bind answered
+/// 403 - the transport was unusable for the one case it exists for.
+///
+/// Clearing the check would trade one bug for a worse one. Instead the address
+/// the operator explicitly asked to bind is added, both bare and with the port,
+/// since either spelling can arrive in the header. Everything else is still
+/// rejected, and an empty default is left empty: rmcp reads that as "checking
+/// disabled", and this function must not quietly re-enable it.
+fn allowed_hosts_for(mut default: Vec<String>, host: &str, port: u16) -> Vec<String> {
+    if default.is_empty() {
+        return default;
+    }
+    for h in [host.to_string(), format!("{host}:{port}")] {
+        if !default.contains(&h) {
+            default.push(h);
+        }
+    }
+    default
+}
+
 async fn serve_http(
     engine: uia::Engine,
     host: &str,
@@ -397,14 +426,19 @@ async fn serve_http(
     use axum::extract::ConnectInfo;
     use axum::http::StatusCode;
     use rmcp::transport::streamable_http_server::session::local::LocalSessionManager;
-    use rmcp::transport::streamable_http_server::StreamableHttpService;
+    use rmcp::transport::streamable_http_server::{
+        StreamableHttpServerConfig, StreamableHttpService,
+    };
     use std::net::SocketAddr;
 
     let allowlist = std::sync::Arc::new(guard::load_allowlist());
+
+    let mut cfg = StreamableHttpServerConfig::default();
+    cfg.allowed_hosts = allowed_hosts_for(cfg.allowed_hosts, host, port);
     let svc = StreamableHttpService::new(
         move || Ok(Wincrust::new(engine.clone(), allowlist.clone())),
         LocalSessionManager::default().into(),
-        Default::default(),
+        cfg,
     );
 
     let key = auth_key.clone();
@@ -642,3 +676,43 @@ async fn ocr_fallback(query: &str, action: &str, mut r: uia::ActResult) -> uia::
 
 /// How long to wait between a coordinate click and the confirming capture.
 const SETTLE_MS: u64 = 250;
+
+#[cfg(test)]
+mod host_tests {
+    use super::allowed_hosts_for;
+
+    fn loopback() -> Vec<String> {
+        vec!["localhost".into(), "127.0.0.1".into(), "::1".into()]
+    }
+
+    #[test]
+    fn a_tailscale_bind_becomes_reachable() {
+        // The shipped 0.1.0 bug: this address answered 403 on every request.
+        let out = allowed_hosts_for(loopback(), "100.78.123.110", 8900);
+        assert!(out.contains(&"100.78.123.110".to_string()));
+        assert!(out.contains(&"100.78.123.110:8900".to_string()));
+    }
+
+    #[test]
+    fn loopback_still_works_and_is_not_duplicated() {
+        let out = allowed_hosts_for(loopback(), "127.0.0.1", 8900);
+        assert_eq!(out.iter().filter(|h| *h == "127.0.0.1").count(), 1);
+        assert!(out.contains(&"127.0.0.1:8900".to_string()));
+    }
+
+    #[test]
+    fn everything_else_is_still_rejected() {
+        // The point of the fix is that it does NOT disable the check.
+        let out = allowed_hosts_for(loopback(), "100.78.123.110", 8900);
+        assert!(!out.contains(&"evil.example.com".to_string()));
+        assert!(!out.iter().any(|h| h.contains("evil")));
+    }
+
+    #[test]
+    fn an_empty_default_stays_empty() {
+        // rmcp reads an empty list as "host checking disabled". If an operator
+        // or a future rmcp default turns it off, this must not switch it back
+        // on with a one-entry allowlist that rejects everything else.
+        assert!(allowed_hosts_for(Vec::new(), "100.78.123.110", 8900).is_empty());
+    }
+}
