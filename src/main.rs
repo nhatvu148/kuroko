@@ -48,11 +48,25 @@ enum Command {
     },
     /// Read text off the screen and return where it is (OCR).
     FindText {
-        /// Case-insensitive substring. Omit to return every line found.
+        /// Case-insensitive substring, tolerant of glyphs OCR confuses (1/I/l,
+        /// 0/O, 5/S...). Omit to return every line found.
         #[arg(long)]
         query: Option<String>,
         #[arg(long, default_value_t = 50)]
         max: usize,
+        /// Restrict OCR to one window. Fewer pixels, more magnification, and no
+        /// matches from elsewhere on the desktop.
+        #[arg(long)]
+        hwnd: Option<isize>,
+        /// Magnify before recognition. 0 chooses automatically. Values below
+        /// 1.0 do not shrink - nothing is resized and the reported scale says so.
+        #[arg(long, default_value_t = 0.0)]
+        scale: f32,
+        /// OCR this PNG instead of the screen, for reproducible measurement.
+        /// Rejected at parse time alongside --hwnd rather than after the file
+        /// has already been read.
+        #[arg(long, conflicts_with = "hwnd")]
+        image: Option<std::path::PathBuf>,
     },
     /// List displays with their bounds and real scale factors.
     Displays,
@@ -180,9 +194,23 @@ async fn main() -> Result<()> {
                 .collect();
             server::serve(engine, &transport, &host, port, auth_key, allow).await?;
         }
-        Command::FindText { query, max } => {
-            let r = tokio::task::spawn_blocking(move || ocr::find_text(query.as_deref(), max))
-                .await??;
+        Command::FindText {
+            query,
+            max,
+            hwnd,
+            scale,
+            image,
+        } => {
+            let r = tokio::task::spawn_blocking(move || {
+                ocr::find_text(ocr::FindArgs {
+                    query: query.as_deref(),
+                    max_matches: max,
+                    hwnd,
+                    scale,
+                    image: image.as_deref(),
+                })
+            })
+            .await??;
             println!("{}", serde_json::to_string_pretty(&r)?);
         }
         Command::Displays => {

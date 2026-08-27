@@ -128,6 +128,29 @@ pub struct ActArgs {
     pub value: Option<String>,
 }
 
+/// Bounds of a single top-level window, for OCR's region-of-interest path.
+/// Uses the Win32 rect rather than a UIA query: it needs no COM thread, and a
+/// window's outer rectangle is exactly what we want to crop to.
+#[cfg(windows)]
+pub fn window_bounds(hwnd: isize) -> Result<Bounds> {
+    use windows::Win32::Foundation::{HWND, RECT};
+    use windows::Win32::UI::WindowsAndMessaging::GetWindowRect;
+    let h = HWND(hwnd as *mut core::ffi::c_void);
+    let mut r = RECT::default();
+    unsafe { GetWindowRect(h, &mut r) }.map_err(|e| anyhow!("GetWindowRect({hwnd}): {e}"))?;
+    Ok(Bounds {
+        x: r.left,
+        y: r.top,
+        w: r.right - r.left,
+        h: r.bottom - r.top,
+    })
+}
+
+#[cfg(not(windows))]
+pub fn window_bounds(_hwnd: isize) -> Result<Bounds> {
+    Err(anyhow!("requires Windows"))
+}
+
 /// Commands the COM thread understands. Each carries its own reply channel.
 enum Cmd {
     ListWindows(oneshot::Sender<Result<Vec<WindowInfo>>>),

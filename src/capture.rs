@@ -326,6 +326,65 @@ pub fn encode_png_native(f: &Frame) -> Result<Vec<u8>> {
     encode_png(f, 0).map(|(png, _, _, _)| png)
 }
 
+/// Magnified PNG for recognition, and **the scale actually applied**.
+///
+/// Returning the effective scale is the point. A caller has to divide the
+/// recogniser's coordinates back out, and if it divides by a number this
+/// function did not use, every coordinate is silently wrong with no error
+/// anywhere - which is what happened when a fractional scale skipped the resize
+/// while the caller still divided by it. Handing back the real value makes the
+/// two sides impossible to disagree.
+///
+/// Deliberately does not route through `encode_png`, whose `max_width` only
+/// ever shrinks (`f.w > max_width`) - passing a larger width there is a silent
+/// no-op, which is exactly how an "upscale" knob came to do nothing at all.
+pub fn encode_png_scaled(f: &Frame, scale: f32) -> Result<(Vec<u8>, f32)> {
+    use image::ImageEncoder;
+    if scale <= 1.0 {
+        // 1.0, not the requested value: nothing was resized.
+        return encode_png_native(f).map(|png| (png, 1.0));
+    }
+    let img = image::RgbImage::from_raw(f.w, f.h, f.rgb.clone())
+        .ok_or_else(|| anyhow!("frame buffer size does not match {}x{}", f.w, f.h))?;
+    let (w, h) = (
+        ((f.w as f32) * scale).round().max(1.0) as u32,
+        ((f.h as f32) * scale).round().max(1.0) as u32,
+    );
+    // Lanczos3 rather than Triangle: upscaling for a recogniser wants sharp
+    // glyph edges, and bilinear softens exactly the strokes it needs to read.
+    let big = image::imageops::resize(&img, w, h, image::imageops::FilterType::Lanczos3);
+    let mut png = Vec::new();
+    image::codecs::png::PngEncoder::new(&mut png).write_image(
+        big.as_raw(),
+        w,
+        h,
+        image::ExtendedColorType::Rgb8,
+    )?;
+    // The real ratio, not the request: rounding to whole pixels means a 1.5x
+    // ask on an odd-width frame is not exactly 1.5x.
+    Ok((png, w as f32 / f.w as f32))
+}
+
+/// Load a PNG as a frame, so accuracy can be measured against a fixed image
+/// rather than a live desktop that changes between runs.
+pub fn frame_from_png(path: &std::path::Path) -> Result<Frame> {
+    let img = image::open(path)
+        .map_err(|e| anyhow!("cannot read {}: {e}", path.display()))?
+        .to_rgb8();
+    Ok(Frame {
+        w: img.width(),
+        h: img.height(),
+        // A file has no place on screen; coordinates come back image-relative.
+        origin: (0, 0),
+        rgb: img.into_raw(),
+    })
+}
+
+/// Crop exposed for the OCR region-of-interest path.
+pub fn crop_frame(f: &Frame, x: u32, y: u32, w: u32, h: u32) -> Frame {
+    crop(f, x, y, w, h)
+}
+
 /// CLI convenience wrapper: same thing, but writes the PNG to disk.
 pub fn observe(diff: bool, max_width: u32, out_path: Option<&str>) -> Result<Observation> {
     let (obs, png) = observe_bytes(diff, max_width)?;
