@@ -25,6 +25,14 @@ rust-version = "1.96"
 # `observe --out` test.
 include = ["src/**/*.rs", "Cargo.toml", "README.md", "LICENSE"]
 
+# docs.rs builds on x86_64-unknown-linux-gnu by default. Every Windows API this
+# crate is built on is absent there, so the docs build would fail and crates.io
+# would show a red "build failed" beside a crate that is perfectly healthy on
+# the only platform it claims. Pin the docs build to the target it supports.
+[package.metadata.docs.rs]
+targets = ["x86_64-pc-windows-msvc"]
+default-target = "x86_64-pc-windows-msvc"
+
 [dependencies]
 anyhow = "1.0.104"
 serde = { version = "1.0.229", features = ["derive"] }
