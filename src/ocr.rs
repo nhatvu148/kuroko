@@ -38,6 +38,8 @@ pub struct TextResult {
     pub lines_seen: usize,
     /// Magnification applied before recognition.
     pub scale: f32,
+    /// Pixel preparation applied before recognition.
+    pub prep: String,
     pub elapsed_ms: f64,
 }
 
@@ -83,6 +85,8 @@ pub struct FindArgs<'a> {
     /// OCR this PNG instead of the screen. Makes accuracy measurable against a
     /// fixed image rather than a live desktop that changes between runs.
     pub image: Option<&'a std::path::Path>,
+    /// Pixel preparation before recognition.
+    pub prep: crate::capture::Prep,
 }
 
 #[cfg(windows)]
@@ -139,10 +143,11 @@ pub fn find_text(args: FindArgs<'_>) -> Result<TextResult> {
         let longest = frame.w.max(frame.h) as f32;
         (max_dim / longest).clamp(1.0, 1.5)
     };
+
     // The scale that was actually applied, which is not always the one asked
-    // for - a fractional request resizes nothing, and rounding to whole pixels
+    // for: a fractional request resizes nothing, and rounding to whole pixels
     // shifts the ratio slightly either way.
-    let (png, scale) = crate::capture::encode_png_scaled(&frame, scale)?;
+    let (png, scale) = crate::capture::encode_png_scaled(&frame, scale, args.prep)?;
 
     // .join() blocks; this whole function runs inside spawn_blocking, so there is
     // no runtime to starve. IAsyncOperation also implements IntoFuture if this
@@ -254,6 +259,7 @@ pub fn find_text(args: FindArgs<'_>) -> Result<TextResult> {
         matches,
         lines_seen,
         scale,
+        prep: format!("{:?}", args.prep).to_lowercase(),
         elapsed_ms: t0.elapsed().as_secs_f64() * 1000.0,
     })
 }
