@@ -11,3 +11,7 @@
 # here, so this is where the rule belongs.
 /*.png
 /*.txt
+
+# Local MCP client config. Holds a bearer token that is, by design, one secret
+# away from an elevated desktop - and this repository is public.
+.mcp.json
