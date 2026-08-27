@@ -17,7 +17,7 @@ admin token on a network socket, with tools including `PowerShell` and `Registry
 wincrust has 16 direct dependencies and 168 transitive crates. That is not a small number, and
 it would be dishonest to pretend otherwise — the difference is in kind, not count: Rust dependencies
 are resolved at compile time and dead-code-eliminated, with no interpreter, no dynamic import and no
-`eval` in the running process. And the tool surface is five, none of which is a shell.
+`eval` in the running process. And the tool surface is six, none of which is a shell.
 
 Elevation itself is not the reason — that is a `-RunLevel Highest` flag on a scheduled task, no code
 required. The reason is what elevation does to the cost of a large dependency tree.
@@ -84,8 +84,9 @@ Latency is app-dependent; Task Manager is slow for both.
 
 ## What is actually verified
 
-Everything below was exercised by hand on **one machine**: Windows 11 Home 25H2,
-x86_64, en-US, on one and two 1920x1080 displays.
+Exercised by hand on **two machines**: Windows 11 Home 25H2 (build 26200) on
+one and two 1920x1080 displays, and Windows Server 2022 Datacenter (build
+20348) in an RDP session. Both x86_64, en-US.
 
 | | status |
 |---|---|
@@ -97,7 +98,33 @@ x86_64, en-US, on one and two 1920x1080 displays.
 | **non-English labels** | **verified** against a real UIA tree carrying Japanese, German, Vietnamese and full-width labels — see below |
 | ARM64 | cross-compiles in CI (`aarch64-pc-windows-msvc`); never run, and never on an ARM64 host |
 | Windows 10 | not tested ([#6](https://github.com/nhatvu148/wincrust/issues/6)) |
-| Windows Server | **out of scope.** Some configurations have no interactive desktop at all, and this crate requires one |
+| **Windows Server 2022** | **verified** in an RDP session — build 20348, the pre-Windows-11 shell generation |
+| Windows Server *without an interactive desktop* | out of scope, and unfixable: this crate requires a desktop |
+
+### A second platform
+
+Windows Server 2022 Datacenter, build 20348, driven through an interactive RDP
+session. `windows` enumerated ten top-level windows, `discover` returned
+nineteen entities for the taskbar with their real names, `act` resolved a
+selector at the `exact` tier, and `find_text` read the screen with the en-US
+recognizer. The 51 unit tests and clippy pass there too.
+
+Two things this is worth more than a second green tick for.
+
+Build 20348 is the **Windows 10 21H2 branch** — the pre-Windows-11 shell, with
+the old taskbar and window-frame metrics. That is the generation where
+Windows 10 differences would actually live, so it narrows [#6](https://github.com/nhatvu148/wincrust/issues/6)
+considerably without closing it. Windows 10 itself is still untested.
+
+And it corrected this README, which used to say Windows Server was out of
+scope. It is not: what is out of scope is a machine with no interactive
+desktop, which some Server configurations have and this one did not. The
+distinction is the desktop, not the edition.
+
+Session 0 isolation reproduced there exactly, on a machine that shares nothing
+with the development laptop: over SSH the process lands in session 0, sees a
+phantom 1024x768 desktop, enumerates **zero** windows, and the capture guard
+refuses rather than returning a picture of nothing.
 
 ### Multiple monitors
 
