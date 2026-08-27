@@ -93,13 +93,13 @@ tasks:
   # --- the desktop server ----------------------------------------------------
 
   setup:
-    desc: 'Install and register the desktop server. Requires CLIENT_IP=<tailscale ip>'
+    desc: 'Install and register the desktop server. Requires CLIENT_IP=<ip>; optional ALLOW=app1,app2 for `launch`'
     platforms: [windows]
     requires:
       vars: [CLIENT_IP]
     cmds:
       - >-
-        powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/wincrust-serve.ps1 -ClientIp {{.CLIENT_IP}} -Port {{.PORT}}
+        powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/wincrust-serve.ps1 -ClientIp {{.CLIENT_IP}} -Port {{.PORT}} {{if .ALLOW}}-Allow {{.ALLOW}}{{end}}
 
   setup:rotate:
     desc: 'Rotate the auth key and re-register. Every client will need reconfiguring.'
