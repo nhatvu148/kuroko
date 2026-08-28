@@ -128,6 +128,15 @@ pub fn capture_window(hwnd: isize) -> Result<Frame> {
         if !IsWindow(Some(h)).as_bool() {
             return Err(anyhow!("window {hwnd} no longer exists"));
         }
+        // Same check grab() makes, and for the same reason: a locked session
+        // yields a blank or nonsense frame, and "PrintWindow failed" would
+        // send the reader looking at the window rather than at the lock.
+        if session_is_locked() {
+            return Err(anyhow!(
+                "the session is locked - a capture here returns the lock screen, not the desktop. \
+                 Unlock the machine, or expect UIA and OCR to see nothing."
+            ));
+        }
         let mut r = RECT::default();
         GetWindowRect(h, &mut r)?;
         let (w, ht) = (r.right - r.left, r.bottom - r.top);
@@ -139,8 +148,24 @@ pub fn capture_window(hwnd: isize) -> Result<Frame> {
         if screen.is_invalid() {
             return Err(anyhow!("GetDC failed"));
         }
+        // Checked rather than assumed: GDI handle exhaustion otherwise
+        // surfaces later as "GetDIBits returned no scanlines", which names the
+        // wrong call entirely.
         let mem = CreateCompatibleDC(Some(screen));
+        if mem.is_invalid() {
+            ReleaseDC(None, screen);
+            return Err(anyhow!(
+                "CreateCompatibleDC failed - GDI handles may be exhausted"
+            ));
+        }
         let bmp = CreateCompatibleBitmap(screen, w, ht);
+        if bmp.is_invalid() {
+            let _ = DeleteDC(mem);
+            ReleaseDC(None, screen);
+            return Err(anyhow!(
+                "CreateCompatibleBitmap failed for {w}x{ht} - GDI handles or memory may be exhausted"
+            ));
+        }
         let old = SelectObject(mem, bmp.into());
 
         let ok = PrintWindow(h, mem, PRINT_WINDOW_FLAGS(PW_RENDERFULLCONTENT));
@@ -233,7 +258,20 @@ pub fn grab() -> Result<Frame> {
             return Err(anyhow!("GetDC failed"));
         }
         let mem = CreateCompatibleDC(Some(screen));
+        if mem.is_invalid() {
+            ReleaseDC(None, screen);
+            return Err(anyhow!(
+                "CreateCompatibleDC failed - GDI handles may be exhausted"
+            ));
+        }
         let bmp = CreateCompatibleBitmap(screen, w, h);
+        if bmp.is_invalid() {
+            let _ = DeleteDC(mem);
+            ReleaseDC(None, screen);
+            return Err(anyhow!(
+                "CreateCompatibleBitmap failed for {w}x{h} - GDI handles or memory may be exhausted"
+            ));
+        }
         let old = SelectObject(mem, bmp.into());
 
         let blit = BitBlt(mem, 0, 0, w, h, Some(screen), x, y, SRCCOPY);
