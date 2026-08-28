@@ -38,9 +38,18 @@ jobs:
 
       - name: verify the binary matches the tag
         shell: pwsh
+        # Through `env:`, never interpolated into the script body. GitHub
+        # expands a `${{ }}` expression before pwsh parses the line, so a tag
+        # containing a quote or `$(...)` would be executed rather than
+        # compared - in a job holding `contents: write`. Triggering this needs
+        # repo write access already, which limits the reach but is not a reason
+        # to write it the unsafe way.
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
-          $tag = "${{ github.event.inputs.tag }}"
-          if (-not $tag) { $tag = "${{ github.ref_name }}" }
+          $tag = $env:INPUT_TAG
+          if (-not $tag) { $tag = $env:REF_NAME }
           $expected = $tag.TrimStart('v')
           $actual = (& ./target/release/wincrust.exe --version) -replace '^wincrust\s+', ''
           Write-Host "tag $tag expects $expected; binary reports $actual"
