@@ -91,6 +91,19 @@ Do not report success from `ok: true` alone.
   Re-discover; do not reuse the old scope.
 - **`stopped`** - the emergency stop is engaged. Do not work around it.
 
+## A blank viewport is not evidence of an empty one
+
+`observe` reads the desktop surface, and hardware-accelerated content - an
+OpenGL or Direct3D viewport - is composited by DWM and is not in it. Those
+regions come back as flat clear colour, which looks exactly like an empty
+viewport and has been reported as one.
+
+`observe` with `hwnd` renders that window on demand instead and is worth
+trying, but it is **not** a guaranteed fix: on at least one OpenGL viewport it
+was measured to change nothing. If both routes return flat pixels, say the
+content could not be captured. Do not say the viewport is empty - that is a
+claim about the application, and this tool cannot support it.
+
 ## Refusals that are correct
 
 - **UAC consent prompts are unreachable** by any process, elevated or not.
