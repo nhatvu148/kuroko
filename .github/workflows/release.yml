@@ -13,6 +13,10 @@ on:
       tag:
         description: "Existing tag to build and release, e.g. v0.2.4"
         required: true
+      latest:
+        description: "Mark as Latest — tick only when re-running the NEWEST tag"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -71,6 +75,19 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          # GitHub marks "Latest" by creation time, not by version, so a
+          # back-filled old tag created today steals the badge from the newest
+          # release - and the repo's download button then hands out an older
+          # binary. Observed: back-filling 0.2.0-0.2.3 made 0.2.2 Latest while
+          # 0.2.4 was current.
+          #
+          # A tag push is always the newest and claims it. A manual run
+          # defaults to not claiming it, because back-filling is what manual
+          # runs are usually for - but re-running the newest tag after a failed
+          # push is a real case, so it is a checkbox rather than an inference.
+          # Comparing versions here would mean semver parsing in a workflow to
+          # answer something the person triggering it already knows.
+          make_latest: ${{ github.event_name == 'push' || inputs.latest }}
           # Not generated: a changelog assembled from commit subjects reads as
           # noise next to commits written to explain reasoning.
           body: |
