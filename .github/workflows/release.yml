@@ -71,6 +71,12 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          # GitHub marks "Latest" by creation time, not by version, so a
+          # back-filled old tag created today steals the badge from the newest
+          # release - and the repo's download button then hands out an older
+          # binary. Observed: back-filling 0.2.0-0.2.3 made 0.2.2 Latest while
+          # 0.2.4 was current. Only a real tag push claims it.
+          make_latest: ${{ github.event_name == 'push' }}
           # Not generated: a changelog assembled from commit subjects reads as
           # noise next to commits written to explain reasoning.
           body: |
