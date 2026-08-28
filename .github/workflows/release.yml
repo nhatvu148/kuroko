@@ -1,0 +1,91 @@
+name: release
+
+# Tag-driven, not branch-driven: a release should correspond to a commit that
+# was tagged deliberately, and `cargo publish` already happened against that
+# same commit. Building from anything else would ship a binary that no
+# published version corresponds to.
+on:
+  push:
+    tags: ["v*"]
+  # Manual, for back-filling tags that predate this workflow.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and release, e.g. v0.2.4"
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Check out the tag itself, so a manual run back-fills the code that
+          # was actually released rather than whatever main holds today.
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: build
+        run: cargo build --release
+
+      - name: verify the binary matches the tag
+        shell: pwsh
+        # Through `env:`, never interpolated into the script body. GitHub
+        # expands a `${{ }}` expression before pwsh parses the line, so a tag
+        # containing a quote or `$(...)` would be executed rather than
+        # compared - in a job holding `contents: write`. Triggering this needs
+        # repo write access already, which limits the reach but is not a reason
+        # to write it the unsafe way.
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          $tag = $env:INPUT_TAG
+          if (-not $tag) { $tag = $env:REF_NAME }
+          $expected = $tag.TrimStart('v')
+          $actual = (& ./target/release/wincrust.exe --version) -replace '^wincrust\s+', ''
+          Write-Host "tag $tag expects $expected; binary reports $actual"
+          # A tag and a binary that disagree would put a version on a download
+          # that does not match what it runs as. Cheap to check, confusing to
+          # discover later.
+          if ($actual.Trim() -ne $expected) {
+            throw "version mismatch: tag says $expected, binary says $actual"
+          }
+
+      - name: checksum
+        shell: pwsh
+        run: |
+          $h = (Get-FileHash target/release/wincrust.exe -Algorithm SHA256).Hash.ToLower()
+          "$h  wincrust.exe" | Set-Content target/release/wincrust.exe.sha256
+          Write-Host $h
+
+      - name: release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          # Not generated: a changelog assembled from commit subjects reads as
+          # noise next to commits written to explain reasoning.
+          body: |
+            `wincrust.exe` below is a self-contained Windows x86_64 binary — no Rust toolchain needed.
+
+            ```powershell
+            # verify, then put it anywhere on PATH
+            Get-FileHash .\wincrust.exe -Algorithm SHA256
+            ```
+
+            Or from source: `cargo install wincrust`
+
+            See the [README](https://github.com/nhatvu148/wincrust#readme) for setup, and
+            [docs/USING.md](https://github.com/nhatvu148/wincrust/blob/main/docs/USING.md)
+            for what to ask it and when to use SSH instead.
+          files: |
+            target/release/wincrust.exe
+            target/release/wincrust.exe.sha256
