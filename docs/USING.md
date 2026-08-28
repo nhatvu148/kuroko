@@ -102,6 +102,34 @@ much leniency the match needed. `matched_by: "confusable"` means it only
 matched after folding characters the recogniser mixes up, which is the weakest
 evidence this tool produces.
 
+### Viewports that draw their own pixels
+
+`observe` reads the desktop surface, and hardware-accelerated content - an
+OpenGL or Direct3D viewport - is composited by DWM rather than drawn into it.
+Those regions come back as flat clear colour, which looks exactly like an
+empty viewport.
+
+`observe` with `hwnd` renders that one window on demand instead. It helps some
+applications and not others: on one CAD viewport it was measured to change
+nothing, both paths returning identical flat pixels.
+
+**When a viewport reads flat, compare both paths before concluding anything.**
+A desktop read picks up translucent overlays lying over the viewport, and those
+blend with what is underneath - an overlay tinted with the model's colour
+proves the content is being drawn even while the canvas reads flat. The `hwnd`
+render is cleaner and loses that signal precisely because it renders the window
+properly. Measured on that same viewport: the desktop read showed toolbars
+tinted by the model, the window render showed them back to their own colour,
+and both canvases were flat. The blind path carried the evidence.
+
+If neither reads it, the application's own export - Copy to Clipboard, a
+save-image command - is the reliable route, and worth trying before drawing any
+conclusion about what the application is displaying.
+
+A flat region means the content could not be captured. It does not mean the
+viewport is empty - that is a claim about the application, and nothing here
+supports it.
+
 ### The elevation ceiling
 
 > There is an elevated Administrator console open. Can you read its title?
