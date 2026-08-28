@@ -104,6 +104,19 @@ was measured to change nothing. If both routes return flat pixels, say the
 content could not be captured. Do not say the viewport is empty - that is a
 claim about the application, and this tool cannot support it.
 
+**The blind path can carry more evidence than the clean one.** A desktop read
+picks up translucent overlays - toolbars, panels - lying over the viewport,
+and those blend with whatever is underneath. An overlay tinted with the
+model's own colour is proof the content is being drawn, even when the canvas
+itself reads flat. The `hwnd` render is cleaner and loses exactly that signal.
+So when the question is *"is anything there at all?"*, compare both: the
+desktop read is the one that can answer it.
+
+When neither can, the application's own export - a Copy to Clipboard, a
+screenshot command, a save-image menu item - is the reliable read, and is
+worth reaching for before concluding anything about what the application is
+showing.
+
 ## Refusals that are correct
 
 - **UAC consent prompts are unreachable** by any process, elevated or not.

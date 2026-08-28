@@ -167,6 +167,20 @@ directories. Allowlisting the `.exe` skips all of that and brings the
 application up subtly wrong rather than not at all, which is harder to
 diagnose than a refusal.
 
+**When a viewport reads flat, compare both capture paths before concluding
+anything.** A desktop read picks up translucent overlays lying over the
+viewport, and those blend with what is underneath - an overlay tinted with the
+model's colour proves the content is being drawn even while the canvas reads
+flat. The `hwnd` render is cleaner and loses that signal precisely because it
+renders the window properly. Measured on one CAD viewport: the desktop read
+showed toolbars tinted by the model, the window render showed them back to
+their own colour, and both canvases were flat. The blind path carried the
+evidence.
+
+If neither reads it, the application's own export - Copy to Clipboard, a
+save-image command - is the reliable route, and worth trying before drawing
+any conclusion about what the application is displaying.
+
 **`launch` starts an application; it does not promise a fresh one.** Windows 11
 Notepad restores its previous tabs, including unsaved ones, so a launch can
 surface somebody's in-progress work. Nothing here has gone wrong - it is what
