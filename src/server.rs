@@ -60,7 +60,18 @@ pub struct ActParams {
     /// result will say `resolved_by: "ocr"` when this path was taken.
     #[serde(default)]
     pub allow_ocr: bool,
+    // The routing line leads because this description is long and a reader who
+    // pattern-matches on the first plausible verb stops there. One did: `type`
+    // failed for want of a value pattern, `key` refused the ':' in a path, and
+    // the workaround was a .cmd renamed to pure letters so it could be spelled
+    // out a keystroke at a time. `type_keys` was documented the whole time,
+    // three paragraphs down - which is the same as not being documented. Put
+    // the answer above the explanation, and resist lengthening either.
     /// click | type | type_keys | key | toggle | expand | select
+    ///
+    /// Which one: `type` for form fields. `type_keys` for consoles, terminals,
+    /// and any text containing ':' or '\'. `key` for Enter, Escape and chords
+    /// only.
     ///
     /// `type` sets a field's value through a control pattern. `key` sends
     /// keystrokes - which is a different thing, and the one you need for
@@ -227,7 +238,14 @@ impl Wincrust {
 
     #[tool(
         name = "windows",
-        description = "List top-level windows with their handles, pids and bounds."
+        description = "List top-level windows with their handles, pids and bounds. TOP-LEVEL is \
+                       literal: this walks the desktop's direct children, so a dialog owned by \
+                       another window - or parented into one, as a splash screen's recovery \
+                       prompt is - does not appear here at all. An application that looks hung \
+                       with nothing in this list is very often blocked on exactly such a prompt, \
+                       and has been reported as hung on that evidence. Before concluding anything \
+                       about a stuck application, call `observe` with no `hwnd`: a desktop read \
+                       shows what this list structurally cannot."
     )]
     async fn windows(&self) -> Result<Json<serde_json::Value>, McpError> {
         let w = self
@@ -316,7 +334,10 @@ impl Wincrust {
                        helps SOME applications and is measured as changing nothing on at least \
                        one OpenGL viewport - try it, do not rely on it. If both come back flat, \
                        the content is real and unreadable by this route: do not report the \
-                       viewport as empty."
+                       viewport as empty. A desktop read is also how you find a blocking modal \
+                       that `windows` cannot see - a dialog parented into another window is not \
+                       top-level, so an app that appears hung may simply be waiting on a prompt \
+                       no window list mentions."
     )]
     async fn observe(
         &self,
