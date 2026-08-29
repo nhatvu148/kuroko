@@ -25,6 +25,14 @@ pub struct WindowInfo {
     pub hwnd: isize,
     pub pid: i32,
     pub bounds: Bounds,
+    /// The window that owns this one, when it has an owner.
+    ///
+    /// Present so a dialog can be attributed to the application it is blocking
+    /// rather than appearing as an unexplained extra entry: an owned window is
+    /// almost always a dialog, and a dialog with an owner is almost always the
+    /// answer to "why is that app not responding".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owned_by: Option<isize>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize, JsonSchema)]

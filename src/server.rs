@@ -43,7 +43,11 @@ pub struct DiscoverParams {
 pub struct ActParams {
     /// The `scope` string from the discover response that produced this entity.
     pub scope: String,
-    /// The entity's `path`. Fast and exact while the tree is unchanged.
+    /// The entity's `path`. Fast and exact while the tree is unchanged - but
+    /// it is an index into the tree as `discover` saw it, and a tooltip
+    /// appearing is enough to shift every index by one. Prefer `select` for
+    /// anything that waits, or that runs after the screen may have moved; a
+    /// path is at its best used immediately.
     #[serde(default)]
     pub path: Vec<u32>,
     /// Resolve by identity instead of position. Survives a tree reshape that a
@@ -238,14 +242,14 @@ impl Wincrust {
 
     #[tool(
         name = "windows",
-        description = "List top-level windows with their handles, pids and bounds. TOP-LEVEL is \
-                       literal: this walks the desktop's direct children, so a dialog owned by \
-                       another window - or parented into one, as a splash screen's recovery \
-                       prompt is - does not appear here at all. An application that looks hung \
-                       with nothing in this list is very often blocked on exactly such a prompt, \
-                       and has been reported as hung on that evidence. Before concluding anything \
-                       about a stuck application, call `observe` with no `hwnd`: a desktop read \
-                       shows what this list structurally cannot."
+        description = "List top-level windows with their handles, pids and bounds, including \
+                       dialogs owned by another window. An owned dialog carries `owned_by` with \
+                       its owner's handle, which is what attributes a bare 'Save changes?' prompt \
+                       to the application it is blocking - and a blocked application is the usual \
+                       reason one is on screen. If something still looks hung with nothing here \
+                       to explain it, `observe` with no `hwnd` reads the whole desktop and \
+                       `discover` with no `hwnd` reads the foreground window, which is the modal \
+                       when there is one."
     )]
     async fn windows(&self) -> Result<Json<serde_json::Value>, McpError> {
         let w = self
@@ -259,7 +263,13 @@ impl Wincrust {
     #[tool(
         name = "discover",
         description = "List the actionable elements of a window. Returns a signed `scope` plus \
-                       entities each carrying a `path`; pass both to `act`. Always discover before acting."
+                       entities each carrying a `path`; pass both to `act`. Always discover before \
+                       acting. Prefer `select` over `path` when acting on the result: a path is an \
+                       index into the tree as it was, and a tooltip appearing is enough to shift \
+                       every index by one, while a selector is re-resolved against the tree as it \
+                       is. WITHOUT `hwnd` this reads the foreground window - which is the dialog \
+                       when one is blocking an application, so it is the fastest way to see what \
+                       something is waiting on."
     )]
     async fn discover(
         &self,
@@ -334,10 +344,10 @@ impl Wincrust {
                        helps SOME applications and is measured as changing nothing on at least \
                        one OpenGL viewport - try it, do not rely on it. If both come back flat, \
                        the content is real and unreadable by this route: do not report the \
-                       viewport as empty. A desktop read is also how you find a blocking modal \
-                       that `windows` cannot see - a dialog parented into another window is not \
-                       top-level, so an app that appears hung may simply be waiting on a prompt \
-                       no window list mentions."
+                       viewport as empty. A desktop read is also the second opinion when an \
+                       application appears hung: it shows a blocking dialog whatever the window \
+                       list says, and an app waiting on a prompt has been reported as hung on \
+                       the strength of a windowed read that could not show one."
     )]
     async fn observe(
         &self,
