@@ -88,6 +88,64 @@ pub(super) fn run(rx: Receiver<Cmd>, ready: Sender<Result<()>>, cfg: EngineConfi
 /// already marshalled, so the `Cached*` getters below are local reads. Using
 /// the uncached `Current*` getters instead would cost a COM round trip per
 /// property per element - the difference between ~100ms and ~450ms.
+/// The window that owns `hwnd`, if any.
+///
+/// Ownership is a Win32 relationship UIA does not surface directly, and it is
+/// the one that distinguishes "an extra window appeared" from "that
+/// application is blocked on a dialog".
+fn owner_of(hwnd: isize) -> Option<isize> {
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindow, GW_OWNER};
+    if hwnd == 0 {
+        return None;
+    }
+    let h = HWND(hwnd as *mut core::ffi::c_void);
+    let owner = unsafe { GetWindow(h, GW_OWNER) }.ok()?;
+    (!owner.0.is_null()).then_some(owner.0 as isize)
+}
+
+/// Visible top-level windows that have an owner, as `(hwnd, owner)`.
+///
+/// These are the ones the window list could miss. An owned dialog is top-level
+/// in Win32 terms - its own handle, its own `#32770` class - but a walk of the
+/// desktop element's direct children in the UI Automation tree need not reach
+/// it, and did not: an application sitting on a splash screen with a "do you
+/// want to save the backup data?" prompt in front of it listed no dialog at
+/// all, and was reported hung on that evidence.
+///
+/// `EnumWindows` is the right instrument precisely because it does not share
+/// that blind spot - it enumerates every top-level window, owned or not.
+///
+/// Worth knowing when testing this: an UNOWNED dialog, such as a bare
+/// `MessageBox`, was always listed. So a MessageBox test passes whether or not
+/// this function exists, and proves nothing about the case it was written for.
+fn owned_windows() -> Vec<(isize, isize)> {
+    use windows::core::BOOL;
+    use windows::Win32::Foundation::{LPARAM, TRUE};
+    use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, IsWindowVisible};
+
+    unsafe extern "system" fn cb(h: HWND, data: LPARAM) -> BOOL {
+        let out = unsafe { &mut *(data.0 as *mut Vec<(isize, isize)>) };
+        // Invisible windows are filtered here rather than by the caller: an
+        // application keeps many owned windows alive and hidden, and listing
+        // those would bury the one dialog that is actually on screen.
+        if unsafe { IsWindowVisible(h) }.as_bool() {
+            if let Some(owner) = owner_of(h.0 as isize) {
+                out.push((h.0 as isize, owner));
+            }
+        }
+        TRUE
+    }
+
+    let mut out: Vec<(isize, isize)> = Vec::new();
+    unsafe {
+        let _ = EnumWindows(
+            Some(cb),
+            LPARAM(&mut out as *mut Vec<(isize, isize)> as isize),
+        );
+    }
+    out
+}
+
 fn list_windows(a: &IUIAutomation) -> Result<Vec<WindowInfo>> {
     unsafe {
         let root = a.GetRootElement()?;
@@ -110,6 +168,10 @@ fn list_windows(a: &IUIAutomation) -> Result<Vec<WindowInfo>> {
 
         for i in 0..n {
             let el = arr.GetElement(i)?;
+            let hwnd = el
+                .CachedNativeWindowHandle()
+                .map(|h| h.0 as isize)
+                .unwrap_or(0);
             let r: RECT = el.CachedBoundingRectangle().unwrap_or_default();
             out.push(WindowInfo {
                 name: el.CachedName().map(|b| b.to_string()).unwrap_or_default(),
@@ -120,10 +182,60 @@ fn list_windows(a: &IUIAutomation) -> Result<Vec<WindowInfo>> {
                 control_type: control_type_name(
                     el.CachedControlType().unwrap_or(UIA_CONTROLTYPE_ID(0)),
                 ),
-                hwnd: el
-                    .CachedNativeWindowHandle()
-                    .map(|h| h.0 as isize)
-                    .unwrap_or(0),
+                hwnd,
+                owned_by: owner_of(hwnd),
+                pid: el.CachedProcessId().unwrap_or(0),
+                bounds: Bounds {
+                    x: r.left,
+                    y: r.top,
+                    w: r.right - r.left,
+                    h: r.bottom - r.top,
+                },
+            });
+        }
+
+        // The walk above covers the desktop element's direct children, which is
+        // not the same set as "every top-level window". An owned dialog can sit
+        // outside it, and that is the case worth catching: it is the window a
+        // blocked application is waiting on. Anything already listed is skipped,
+        // so this only ever adds.
+        let known: std::collections::HashSet<isize> = out.iter().map(|w| w.hwnd).collect();
+        for (hwnd, owner) in owned_windows() {
+            if known.contains(&hwnd) {
+                continue;
+            }
+            let h = HWND(hwnd as *mut core::ffi::c_void);
+            // A handle can die between enumerating and resolving it, and a
+            // dialog is exactly the kind of window that closes quickly. A
+            // failure here means it is gone, which is not an error worth
+            // failing the whole listing over.
+            let Ok(el) = a.ElementFromHandleBuildCache(h, &cache) else {
+                continue;
+            };
+            let r: RECT = el.CachedBoundingRectangle().unwrap_or_default();
+            // Zero-area owned windows are plumbing, not dialogs. A terminal
+            // keeps several `PseudoConsoleWindow` helpers alive that are
+            // flagged visible but measure 0x0 - three per terminal in
+            // testing - and they would bury the one dialog this is here to
+            // surface. Nothing without area can block a user or be clicked.
+            //
+            // Applied only to what this loop ADDS: a minimised window also
+            // measures zero, and those come from the walk above, which is
+            // left exactly as it was.
+            if r.right <= r.left || r.bottom <= r.top {
+                continue;
+            }
+            out.push(WindowInfo {
+                name: el.CachedName().map(|b| b.to_string()).unwrap_or_default(),
+                class_name: el
+                    .CachedClassName()
+                    .map(|b| b.to_string())
+                    .unwrap_or_default(),
+                control_type: control_type_name(
+                    el.CachedControlType().unwrap_or(UIA_CONTROLTYPE_ID(0)),
+                ),
+                hwnd,
+                owned_by: Some(owner),
                 pid: el.CachedProcessId().unwrap_or(0),
                 bounds: Bounds {
                     x: r.left,
@@ -236,6 +348,7 @@ fn discover(a: &IUIAutomation, args: &DiscoverArgs, key: &[u8]) -> Result<Discov
                 cached.CachedControlType().unwrap_or(UIA_CONTROLTYPE_ID(0)),
             ),
             hwnd: hwnd.0 as isize,
+            owned_by: owner_of(hwnd.0 as isize),
             pid: cached.CachedProcessId().unwrap_or(0),
             bounds: Bounds {
                 x: wr.left,
@@ -432,6 +545,10 @@ unsafe fn fresh_scope(a: &IUIAutomation, hwnd: HWND, key: &[u8]) -> Option<Strin
             .unwrap_or_default(),
         control_type: String::new(),
         hwnd: hwnd.0 as isize,
+        // Not looked up: this WindowInfo exists only to be hashed into a
+        // generation, and `generation_of` does not read ownership. Filling it
+        // would put a GetWindow call on the path every `act` takes.
+        owned_by: None,
         pid: el.CachedProcessId().unwrap_or(0),
         bounds: Bounds {
             x: wr.left,
@@ -655,6 +772,8 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
                 cached.CachedControlType().unwrap_or(UIA_CONTROLTYPE_ID(0)),
             ),
             hwnd: scope.hwnd,
+            // Same as in `fresh_scope`: hashed, never read.
+            owned_by: None,
             pid: cached.CachedProcessId().unwrap_or(0),
             bounds: Bounds {
                 x: wr.left,
