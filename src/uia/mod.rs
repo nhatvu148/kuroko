@@ -255,12 +255,12 @@ impl Selector {
 
 pub struct ActArgs {
     pub scope: String,
-    /// Child-index path from `discover`. Fast, and exact while the tree is
-    /// unchanged.
-    pub path: Vec<u32>,
     /// Resolved at act-time instead of trusting the path. Takes precedence
     /// when present.
     pub select: Option<Selector>,
+    /// Child-index path from `discover`. Fast, and exact while the tree is
+    /// unchanged.
+    pub path: Vec<u32>,
     pub action: String,
     pub value: Option<String>,
 }

@@ -43,17 +43,17 @@ pub struct DiscoverParams {
 pub struct ActParams {
     /// The `scope` string from the discover response that produced this entity.
     pub scope: String,
+    /// Resolve by identity instead of position: the durable option, and the
+    /// one to reach for first. Survives a tree reshape that a path does not.
+    /// Ambiguity is an error, so be specific.
+    pub select: Option<uia::Selector>,
     /// The entity's `path`. Fast and exact while the tree is unchanged - but
     /// it is an index into the tree as `discover` saw it, and a tooltip
-    /// appearing is enough to shift every index by one. Prefer `select` for
-    /// anything that waits, or that runs after the screen may have moved; a
-    /// path is at its best used immediately.
+    /// appearing is enough to shift every index by one. Best used immediately;
+    /// for anything that waits, or that runs after the screen may have moved,
+    /// `select` is what survives.
     #[serde(default)]
     pub path: Vec<u32>,
-    /// Resolve by identity instead of position. Survives a tree reshape that a
-    /// path does not - prefer it when anything may have changed since
-    /// `discover`. Ambiguity is an error, so be specific.
-    pub select: Option<uia::Selector>,
     /// Fall back to OCR when the selector finds nothing in the UI tree.
     ///
     /// Off by default, and that is deliberate. An OCR hit is a rectangle, not
