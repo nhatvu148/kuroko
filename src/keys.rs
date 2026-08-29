@@ -154,6 +154,18 @@ pub fn parse_chord(spec: &str) -> Result<Chord> {
             match (first, rest) {
                 // Single ASCII alphanumerics map onto their own VK code.
                 (Some(x), None) if x.is_ascii_alphanumeric() => x.to_ascii_uppercase() as u16,
+                // A lone non-alphanumeric character is the common case here:
+                // someone trying to type a path. It has no layout-independent
+                // virtual-key code - ':' is Shift+VK_OEM_1 on US and elsewhere
+                // on JIS or AZERTY - so guessing one would type the wrong
+                // character into a path rather than fail. Point at the action
+                // that sends characters instead of key positions.
+                (Some(x), None) if !x.is_ascii_alphanumeric() => {
+                    return Err(anyhow!(
+                        "{k:?} has no virtual-key code that is the same on every keyboard layout, \
+                         so `key` will not guess one. Use action 'type_keys' to send it as text."
+                    ))
+                }
                 _ => return Err(anyhow!("unknown key {k:?} in {spec:?}")),
             }
         }
@@ -268,6 +280,22 @@ mod tests {
         assert_eq!(seq[0].key, VK_HOME);
         assert!(seq[1].shift && seq[1].key == VK_END);
         assert!(seq[2].ctrl && seq[2].key == b'C' as u16);
+    }
+
+    /// The two characters a path needs. `key` still refuses them - that is
+    /// deliberate, not a gap - but the refusal now names the action that can
+    /// send them, because "unknown key" left the field renaming a script to
+    /// nine pure letters to get around it.
+    #[test]
+    fn path_punctuation_is_refused_but_points_somewhere() {
+        for bad in [":", "\\", "/", "."] {
+            let e = parse_chord(bad)
+                .expect_err("{bad:?} must not parse")
+                .to_string();
+            assert!(e.contains("type_keys"), "{bad:?} said: {e}");
+        }
+        // Still refused, and still not silently mapped to some other key.
+        assert!(parse_chord("Ctrl+:").is_err());
     }
 
     #[test]

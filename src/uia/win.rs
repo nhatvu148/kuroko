@@ -786,22 +786,50 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
         }
 
         // Handled before the pattern table, because keyboard input has no
-        // control pattern: it goes wherever focus is. That makes it the one
-        // action here that is not a contract with a control, so it takes focus
-        // explicitly and says so, rather than looking like an Invoke.
-        if args.action == "key" {
+        // control pattern: it goes wherever focus is. That makes these the
+        // actions that are not a contract with a control, so they take focus
+        // explicitly and say so, rather than looking like an Invoke.
+        //
+        // `type_keys` is the deliberate opt-in escape from `type`: a console
+        // exposes no ValuePattern, so `type` cannot reach one at all. It is a
+        // separate action rather than a silent fallback inside `type` because
+        // the two carry different guarantees - a caller told a pattern wrote
+        // the value, when in fact keystrokes went wherever focus happened to
+        // be, has been told something false. Unlike `key` it sends characters
+        // rather than virtual-key codes, so it can type ':' and '\' and
+        // therefore a file path, which `key` cannot express at any layout.
+        if args.action == "key" || args.action == "type_keys" {
             let spec = args.value.clone().unwrap_or_default();
-            let chords = match crate::keys::parse(&spec) {
-                Ok(c) => c,
-                Err(e) => guard_found!(
-                    "pattern_gone",
-                    args.action,
-                    target,
-                    t0,
-                    format!("{e}"),
-                    by,
-                    matched_by
-                ),
+            let as_text = args.action == "type_keys";
+
+            // Validated before focus is taken: focus is a visible side effect,
+            // and a malformed request should not produce one.
+            let chords = if as_text {
+                match crate::input::text_units(&spec) {
+                    Ok(_) => Vec::new(),
+                    Err(e) => guard_found!(
+                        "pattern_gone",
+                        args.action,
+                        target,
+                        t0,
+                        format!("{e}"),
+                        by,
+                        matched_by
+                    ),
+                }
+            } else {
+                match crate::keys::parse(&spec) {
+                    Ok(c) => c,
+                    Err(e) => guard_found!(
+                        "pattern_gone",
+                        args.action,
+                        target,
+                        t0,
+                        format!("{e}"),
+                        by,
+                        matched_by
+                    ),
+                }
             };
             if let Err(e) = el.SetFocus() {
                 guard_found!(
@@ -814,7 +842,12 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
                     matched_by
                 );
             }
-            if let Err(e) = crate::input::send_keys(&chords) {
+            let sent = if as_text {
+                crate::input::send_text(&spec)
+            } else {
+                crate::input::send_keys(&chords)
+            };
+            if let Err(e) = sent {
                 guard_found!(
                     "pattern_gone",
                     args.action,
@@ -834,12 +867,24 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
                 matched_by,
                 next_scope: fresh_scope(a, hwnd, key),
                 screen_changed: None,
-                detail: Some(format!(
-                    "focused the control and sent {} keystroke(s): {spec:?}. Keyboard input goes \
-                     to whatever holds focus, so this reports that the keys were sent, not that \
-                     the control consumed them - and taking focus is a visible side effect.",
-                    chords.len()
-                )),
+                detail: Some(if as_text {
+                    format!(
+                        "focused the control and typed {} character(s) as unicode keystrokes: \
+                         {spec:?}. Keyboard input goes to whatever holds focus, so this reports \
+                         that the text was sent, not that the control consumed it - and taking \
+                         focus is a visible side effect. A window running elevated will silently \
+                         receive nothing.",
+                        spec.chars().count()
+                    )
+                } else {
+                    format!(
+                        "focused the control and sent {} keystroke(s): {spec:?}. Keyboard input \
+                         goes to whatever holds focus, so this reports that the keys were sent, \
+                         not that the control consumed them - and taking focus is a visible side \
+                         effect.",
+                        chords.len()
+                    )
+                }),
                 elapsed_ms: t0.elapsed().as_secs_f64() * 1000.0,
             });
         }
@@ -879,12 +924,24 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
         };
 
         match ok_detail {
+            // A console, a terminal, and most custom-drawn text surfaces expose
+            // no ValuePattern, so `type` can never reach them. That is not a
+            // transient failure the caller should retry - it is a permanent
+            // property of the control - so the message names the action that
+            // does work rather than leaving them to discover it by guessing.
             Err(_) => guard_found!(
                 "pattern_gone",
                 args.action,
                 target,
                 t0,
-                format!("control no longer supports '{}'", args.action),
+                if args.action == "type" {
+                    "control has no value pattern, so `type` cannot set it. A console or terminal \
+                     never has one. Use action 'type_keys' to send the same string as keystrokes \
+                     instead - it takes focus, which `type` does not."
+                        .to_string()
+                } else {
+                    format!("control no longer supports '{}'", args.action)
+                },
                 by,
                 matched_by
             ),

@@ -166,9 +166,97 @@ pub fn send_keys(_c: &[crate::keys::Chord]) -> Result<()> {
     anyhow::bail!("synthetic keyboard input requires Windows")
 }
 
+/// A run of synthetic text is capped, for the same reason a run of chords is:
+/// one call must not become an unbounded stream of input the user cannot stop.
+/// Generous enough for a command line or a long path, which is the case this
+/// exists to serve.
+pub const MAX_TEXT_UNITS: usize = 2048;
+
+/// The UTF-16 code units a string will be sent as, or an error if there are
+/// too many.
+///
+/// Split out and pure because this is where the bug would actually be: a
+/// character outside the BMP is *two* code units, and sending only the first
+/// delivers a lone surrogate rather than the character. Iterating `chars()`
+/// here instead of `encode_utf16()` is the mistake this function exists to
+/// make untestable-by-inspection into tested.
+pub(crate) fn text_units(s: &str) -> Result<Vec<u16>> {
+    if s.is_empty() {
+        return Err(anyhow!("no text to send"));
+    }
+    let units: Vec<u16> = s.encode_utf16().collect();
+    if units.len() > MAX_TEXT_UNITS {
+        return Err(anyhow!(
+            "{} UTF-16 code units in one call; {MAX_TEXT_UNITS} is the limit",
+            units.len()
+        ));
+    }
+    Ok(units)
+}
+
+/// Sends a string as synthetic keystrokes, character by character.
+///
+/// Unlike `send_keys`, this carries no virtual-key code at all: `KEYEVENTF_UNICODE`
+/// puts the UTF-16 code unit in `wScan` and leaves `wVk` zero, and Windows
+/// delivers that character directly. That is the whole point - a VK code names a
+/// *position on a keyboard*, so it is layout-dependent, and `:` is Shift+VK_OEM_1
+/// on a US layout and something else on JIS or AZERTY. Typing a file path through
+/// VK codes therefore produces the wrong path on a keyboard we did not anticipate,
+/// which is worse than refusing. Unicode has no such failure mode.
+///
+/// It shares every caveat of `send_keys`: it goes wherever focus is, not to a
+/// control by contract, and UIPI silently drops it into a window of higher
+/// integrity than this process.
+#[cfg(windows)]
+pub fn send_text(s: &str) -> Result<()> {
+    use windows::Win32::UI::Input::KeyboardAndMouse::{
+        SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
+        VIRTUAL_KEY,
+    };
+
+    let units = text_units(s)?;
+    let mut events: Vec<INPUT> = Vec::with_capacity(units.len() * 2);
+    let mk = |unit: u16, up: bool| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(0),
+                wScan: unit,
+                dwFlags: if up {
+                    KEYEVENTF_UNICODE | KEYEVENTF_KEYUP
+                } else {
+                    KEYEVENTF_UNICODE
+                },
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    // Surrogate pairs need both halves adjacent and in order, so the units are
+    // emitted exactly as `encode_utf16` produced them.
+    for u in units {
+        events.push(mk(u, false));
+        events.push(mk(u, true));
+    }
+    let sent = unsafe { SendInput(&events, std::mem::size_of::<INPUT>() as i32) };
+    if sent as usize != events.len() {
+        anyhow::bail!(
+            "SendInput accepted {sent} of {} keyboard events - blocked by UIPI? A window running \
+             elevated cannot be typed into from this process.",
+            events.len()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn send_text(_s: &str) -> Result<()> {
+    anyhow::bail!("synthetic keyboard input requires Windows")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::to_normalized;
+    use super::{text_units, to_normalized, MAX_TEXT_UNITS};
 
     #[test]
     fn maps_the_span_to_the_full_range() {
@@ -201,6 +289,51 @@ mod tests {
     fn survives_a_one_pixel_span() {
         assert_eq!(to_normalized(0, 0, 1), 0);
         assert_eq!(to_normalized(0, 0, 0), 0);
+    }
+
+    /// The characters that forced a workaround in the field. A path could not
+    /// be typed at all, because `key` maps only alphanumerics onto VK codes -
+    /// so a benchmark launcher had to be renamed to nine pure letters and put
+    /// on PATH. Through the unicode path they are unremarkable.
+    #[test]
+    fn punctuation_that_no_vk_code_could_carry() {
+        for s in [":", "\\", r"C:\Users\nhatv\.local\bin\uv.exe"] {
+            let u = text_units(s).unwrap_or_else(|e| panic!("{s:?} must encode: {e}"));
+            assert_eq!(u.len(), s.encode_utf16().count(), "{s:?}");
+        }
+        // The colon and backslash specifically, since those are the two the
+        // parser refuses.
+        assert_eq!(text_units(":").unwrap(), vec![b':' as u16]);
+        assert_eq!(text_units("\\").unwrap(), vec![b'\\' as u16]);
+    }
+
+    /// A character outside the BMP is two UTF-16 code units. Iterating
+    /// `chars()` would send one event and deliver a lone surrogate - a
+    /// mangled character rather than the one asked for.
+    #[test]
+    fn an_astral_character_becomes_a_surrogate_pair() {
+        let u = text_units("\u{1F600}").unwrap();
+        assert_eq!(u.len(), 2, "one char, but two code units");
+        assert!((0xD800..0xDC00).contains(&u[0]), "high surrogate first");
+        assert!((0xDC00..0xE000).contains(&u[1]), "low surrogate second");
+
+        // And it must stay adjacent to its neighbours' units, in order.
+        let mixed = text_units("a\u{1F600}b").unwrap();
+        assert_eq!(mixed.len(), 4);
+        assert_eq!(mixed[0], b'a' as u16);
+        assert_eq!(mixed[3], b'b' as u16);
+    }
+
+    #[test]
+    fn a_run_of_text_is_capped() {
+        let long = "a".repeat(MAX_TEXT_UNITS + 1);
+        assert!(text_units(&long).is_err());
+        assert!(text_units(&"a".repeat(MAX_TEXT_UNITS)).is_ok());
+    }
+
+    #[test]
+    fn empty_text_is_refused_rather_than_sent_as_nothing() {
+        assert!(text_units("").is_err());
     }
 
     #[test]
