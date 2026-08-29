@@ -60,20 +60,32 @@ pub struct ActParams {
     /// result will say `resolved_by: "ocr"` when this path was taken.
     #[serde(default)]
     pub allow_ocr: bool,
-    /// click | type | key | toggle | expand | select
+    /// click | type | type_keys | key | toggle | expand | select
     ///
     /// `type` sets a field's value through a control pattern. `key` sends
     /// keystrokes - which is a different thing, and the one you need for
     /// anything a value cannot express: Enter to submit, Escape to dismiss,
     /// Ctrl+S to save. A console prompt is a text field *plus* Enter, so it
     /// usually takes both.
+    ///
+    /// `type_keys` is for the surfaces `type` cannot reach. A console,
+    /// a terminal, and most custom-drawn text areas expose no value pattern
+    /// at all, so `type` fails on them permanently rather than transiently.
+    /// `type_keys` sends the same string as characters instead, which means it
+    /// can type ':' and '\' - so, unlike `key`, it can type a file path. The
+    /// cost is that it takes focus and delivers to whatever holds it, so it
+    /// reports that the text was sent, not that the control received it.
     pub action: String,
-    /// Text for `type`; a key specification for `key`.
+    /// Text for `type` and `type_keys`; a key specification for `key`.
     ///
     /// Key specs are whitespace-separated chords: `Enter`, `Ctrl+S`,
     /// `Ctrl+Shift+P`, `F5`, `Home Shift+End Ctrl+C`. Modifiers are
     /// ctrl/shift/alt/win. Unrecognised keys are refused rather than guessed
-    /// at, and a run is capped at 32 keystrokes.
+    /// at, and a run is capped at 32 keystrokes. `key` carries virtual-key
+    /// codes, which name positions on a keyboard rather than characters, so it
+    /// deliberately refuses punctuation it cannot place on every layout - use
+    /// `type_keys` for that text. A `type_keys` run is capped at 2048
+    /// characters.
     pub value: Option<String>,
 }
 
