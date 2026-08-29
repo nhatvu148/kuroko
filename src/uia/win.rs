@@ -533,7 +533,10 @@ unsafe fn fresh_scope(a: &IUIAutomation, hwnd: HWND, key: &[u8]) -> Option<Strin
             .unwrap_or_default(),
         control_type: String::new(),
         hwnd: hwnd.0 as isize,
-        owned_by: owner_of(hwnd.0 as isize),
+        // Not looked up: this WindowInfo exists only to be hashed into a
+        // generation, and `generation_of` does not read ownership. Filling it
+        // would put a GetWindow call on the path every `act` takes.
+        owned_by: None,
         pid: el.CachedProcessId().unwrap_or(0),
         bounds: Bounds {
             x: wr.left,
@@ -757,7 +760,8 @@ fn act(a: &IUIAutomation, args: &ActArgs, key: &[u8]) -> Result<ActResult> {
                 cached.CachedControlType().unwrap_or(UIA_CONTROLTYPE_ID(0)),
             ),
             hwnd: scope.hwnd,
-            owned_by: owner_of(scope.hwnd),
+            // Same as in `fresh_scope`: hashed, never read.
+            owned_by: None,
             pid: cached.CachedProcessId().unwrap_or(0),
             bounds: Bounds {
                 x: wr.left,
