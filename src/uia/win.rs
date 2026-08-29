@@ -213,6 +213,18 @@ fn list_windows(a: &IUIAutomation) -> Result<Vec<WindowInfo>> {
                 continue;
             };
             let r: RECT = el.CachedBoundingRectangle().unwrap_or_default();
+            // Zero-area owned windows are plumbing, not dialogs. A terminal
+            // keeps several `PseudoConsoleWindow` helpers alive that are
+            // flagged visible but measure 0x0 - three per terminal in
+            // testing - and they would bury the one dialog this is here to
+            // surface. Nothing without area can block a user or be clicked.
+            //
+            // Applied only to what this loop ADDS: a minimised window also
+            // measures zero, and those come from the walk above, which is
+            // left exactly as it was.
+            if r.right <= r.left || r.bottom <= r.top {
+                continue;
+            }
             out.push(WindowInfo {
                 name: el.CachedName().map(|b| b.to_string()).unwrap_or_default(),
                 class_name: el
