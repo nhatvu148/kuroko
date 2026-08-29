@@ -84,8 +84,9 @@ pub struct ActParams {
     /// at, and a run is capped at 32 keystrokes. `key` carries virtual-key
     /// codes, which name positions on a keyboard rather than characters, so it
     /// deliberately refuses punctuation it cannot place on every layout - use
-    /// `type_keys` for that text. A `type_keys` run is capped at 2048
-    /// characters.
+    /// `type_keys` for that text. A `type_keys` run is capped at 2048 UTF-16
+    /// code units, which is fewer than 2048 characters for text outside the
+    /// BMP: an emoji costs two.
     pub value: Option<String>,
 }
 
